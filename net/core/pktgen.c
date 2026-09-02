@@ -114,6 +114,7 @@
 
 #include <linux/sys.h>
 #include <linux/types.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
@@ -125,6 +126,7 @@
 #include <linux/string.h>
 #include <linux/ptrace.h>
 #include <linux/errno.h>
+#include <linux/hex.h>
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/capability.h>
@@ -177,7 +179,7 @@
 #define MAX_IMIX_ENTRIES 20
 #define IMIX_PRECISION 100 /* Precision of IMIX distribution */
 
-#define func_enter() pr_debug("entering %s\n", __func__);
+#define func_enter() pr_debug("entering %s\n", __func__)
 
 #define PKT_FLAGS							\
 	pf(IPV6)		/* Interface in IPV6 Mode */		\
@@ -227,12 +229,12 @@ static char *pkt_flag_names[] = {
 
 /* Xmit modes */
 #define M_START_XMIT		0	/* Default normal TX */
-#define M_NETIF_RECEIVE 	1	/* Inject packets into stack */
+#define M_NETIF_RECEIVE		1	/* Inject packets into stack */
 #define M_QUEUE_XMIT		2	/* Inject packet into qdisc */
 
 /* If lock -- protects updating of if_list */
-#define   if_lock(t)           mutex_lock(&(t->if_lock));
-#define   if_unlock(t)           mutex_unlock(&(t->if_lock));
+#define   if_lock(t)      mutex_lock(&(t->if_lock))
+#define   if_unlock(t)    mutex_unlock(&(t->if_lock))
 
 /* Used to help with determining the pkts on receive */
 #define PKTGEN_MAGIC 0xbe9be955
@@ -283,7 +285,8 @@ struct pktgen_dev {
 	int pkt_overhead;	/* overhead for MPLS, VLANs, IPSEC etc */
 	int nfrags;
 	int removal_mark;	/* non-zero => the device is marked for
-				 * removal by worker thread */
+				 * removal by worker thread
+				 */
 
 	struct page *page;
 	u64 delay;		/* nano-seconds */
@@ -346,10 +349,12 @@ struct pktgen_dev {
 	__u16 udp_dst_max;	/* exclusive, dest UDP port */
 
 	/* DSCP + ECN */
-	__u8 tos;            /* six MSB of (former) IPv4 TOS
-				are for dscp codepoint */
-	__u8 traffic_class;  /* ditto for the (former) Traffic Class in IPv6
-				(see RFC 3260, sec. 4) */
+	__u8 tos;		/* six MSB of (former) IPv4 TOS
+				 * are for dscp codepoint
+				 */
+	__u8 traffic_class;	/* ditto for the (former) Traffic Class in IPv6
+				 * (see RFC 3260, sec. 4)
+				 */
 
 	/* IMIX */
 	unsigned int n_imix_entries;
@@ -389,12 +394,12 @@ struct pktgen_dev {
 
 	__u8 hh[14];
 	/* = {
-	   0x00, 0x80, 0xC8, 0x79, 0xB3, 0xCB,
-
-	   We fill in SRC address later
-	   0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	   0x08, 0x00
-	   };
+	 * 0x00, 0x80, 0xC8, 0x79, 0xB3, 0xCB,
+	 *
+	 * We fill in SRC address later
+	 * 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	 * 0x08, 0x00
+	 * };
 	 */
 	__u16 pad;		/* pad out the hh struct to an even 16 bytes */
 
@@ -458,7 +463,8 @@ struct pktgen_thread {
 	char result[512];
 
 	/* Field for thread to receive "posted" events terminate,
-	   stop ifs etc. */
+	 * stop ifs etc.
+	 */
 
 	u32 control;
 	int cpu;
@@ -472,8 +478,7 @@ struct pktgen_thread {
 #define FIND   0
 
 static const char version[] =
-	"Packet Generator for packet performance testing. "
-	"Version: " VERSION "\n";
+	"Packet Generator for packet performance testing. Version: " VERSION "\n";
 
 static int pktgen_remove_device(struct pktgen_thread *t, struct pktgen_dev *i);
 static int pktgen_add_device(struct pktgen_thread *t, const char *ifname);
@@ -561,6 +566,7 @@ static const struct proc_ops pktgen_proc_ops = {
 static int pktgen_if_show(struct seq_file *seq, void *v)
 {
 	const struct pktgen_dev *pkt_dev = seq->private;
+	unsigned int cflows = READ_ONCE(pkt_dev->cflows);
 	ktime_t stopped;
 	unsigned int i;
 	u64 idle;
@@ -585,7 +591,7 @@ static int pktgen_if_show(struct seq_file *seq, void *v)
 		   pkt_dev->nfrags, (unsigned long long) pkt_dev->delay,
 		   pkt_dev->clone_skb, pkt_dev->odevname);
 
-	seq_printf(seq, "     flows: %u flowlen: %u\n", pkt_dev->cflows,
+	seq_printf(seq, "     flows: %u flowlen: %u\n", cflows,
 		   pkt_dev->lflow);
 
 	seq_printf(seq,
@@ -624,8 +630,7 @@ static int pktgen_if_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "%pM\n", pkt_dev->dst_mac);
 
 	seq_printf(seq,
-		   "     udp_src_min: %d  udp_src_max: %d"
-		   "  udp_dst_min: %d  udp_dst_max: %d\n",
+		   "     udp_src_min: %d  udp_src_max: %d  udp_dst_min: %d  udp_dst_max: %d\n",
 		   pkt_dev->udp_src_min, pkt_dev->udp_src_max,
 		   pkt_dev->udp_dst_min, pkt_dev->udp_dst_max);
 
@@ -671,7 +676,7 @@ static int pktgen_if_show(struct seq_file *seq, void *v)
 
 	for (i = 0; i < NR_PKT_FLAGS; i++) {
 		if (i == FLOW_SEQ_SHIFT)
-			if (!pkt_dev->cflows)
+			if (!cflows)
 				continue;
 
 		if (pkt_dev->flags & (1 << i)) {
@@ -754,6 +759,7 @@ static ssize_t hex32_arg(const char __user *user_buffer, size_t maxlen,
 	for (; i < maxlen; i++) {
 		int value;
 		char c;
+
 		if (get_user(c, &user_buffer[i]))
 			return -EFAULT;
 		value = hex_to_bin(c);
@@ -773,6 +779,7 @@ static ssize_t count_trail_chars(const char __user *user_buffer, size_t maxlen)
 
 	for (i = 0; i < maxlen; i++) {
 		char c;
+
 		if (get_user(c, &user_buffer[i]))
 			return -EFAULT;
 		switch (c) {
@@ -799,6 +806,7 @@ static ssize_t num_arg(const char __user *user_buffer, size_t maxlen,
 
 	for (i = 0; i < maxlen; i++) {
 		char c;
+
 		if (get_user(c, &user_buffer[i]))
 			return -EFAULT;
 		if ((c >= '0') && (c <= '9')) {
@@ -816,6 +824,7 @@ static ssize_t strn_len(const char __user *user_buffer, size_t maxlen)
 
 	for (i = 0; i < maxlen; i++) {
 		char c;
+
 		if (get_user(c, &user_buffer[i]))
 			return -EFAULT;
 		switch (c) {
@@ -974,8 +983,8 @@ static __u32 pktgen_read_flag(const char *f, bool *disable)
 }
 
 static ssize_t pktgen_if_write(struct file *file,
-			       const char __user * user_buffer, size_t count,
-			       loff_t * offset)
+			       const char __user *user_buffer, size_t count,
+			       loff_t *offset)
 {
 	struct seq_file *seq = file->private_data;
 	struct pktgen_dev *pkt_dev = seq->private;
@@ -1307,9 +1316,9 @@ static ssize_t pktgen_if_write(struct file *file,
 				put_page(pkt_dev->page);
 				pkt_dev->page = NULL;
 			}
-		}
-		else
+		} else {
 			sprintf(pg_result, "ERROR: node not possible");
+		}
 		return count;
 	}
 	if (!strcmp(name, "xmit_mode")) {
@@ -1413,8 +1422,7 @@ static ssize_t pktgen_if_write(struct file *file,
 			return -EFAULT;
 		buf[len] = 0;
 		if (strcmp(buf, pkt_dev->dst_min) != 0) {
-			memset(pkt_dev->dst_min, 0, sizeof(pkt_dev->dst_min));
-			strcpy(pkt_dev->dst_min, buf);
+			strscpy_pad(pkt_dev->dst_min, buf);
 			pkt_dev->daddr_min = in_aton(pkt_dev->dst_min);
 			pkt_dev->cur_daddr = pkt_dev->daddr_min;
 		}
@@ -1434,8 +1442,7 @@ static ssize_t pktgen_if_write(struct file *file,
 			return -EFAULT;
 		buf[len] = 0;
 		if (strcmp(buf, pkt_dev->dst_max) != 0) {
-			memset(pkt_dev->dst_max, 0, sizeof(pkt_dev->dst_max));
-			strcpy(pkt_dev->dst_max, buf);
+			strscpy_pad(pkt_dev->dst_max, buf);
 			pkt_dev->daddr_max = in_aton(pkt_dev->dst_max);
 			pkt_dev->cur_daddr = pkt_dev->daddr_max;
 		}
@@ -1544,8 +1551,7 @@ static ssize_t pktgen_if_write(struct file *file,
 			return -EFAULT;
 		buf[len] = 0;
 		if (strcmp(buf, pkt_dev->src_min) != 0) {
-			memset(pkt_dev->src_min, 0, sizeof(pkt_dev->src_min));
-			strcpy(pkt_dev->src_min, buf);
+			strscpy_pad(pkt_dev->src_min, buf);
 			pkt_dev->saddr_min = in_aton(pkt_dev->src_min);
 			pkt_dev->cur_saddr = pkt_dev->saddr_min;
 		}
@@ -1565,8 +1571,7 @@ static ssize_t pktgen_if_write(struct file *file,
 			return -EFAULT;
 		buf[len] = 0;
 		if (strcmp(buf, pkt_dev->src_max) != 0) {
-			memset(pkt_dev->src_max, 0, sizeof(pkt_dev->src_max));
-			strcpy(pkt_dev->src_max, buf);
+			strscpy_pad(pkt_dev->src_max, buf);
 			pkt_dev->saddr_max = in_aton(pkt_dev->src_max);
 			pkt_dev->cur_saddr = pkt_dev->saddr_max;
 		}
@@ -1628,8 +1633,8 @@ static ssize_t pktgen_if_write(struct file *file,
 		if (value > MAX_CFLOWS)
 			value = MAX_CFLOWS;
 
-		pkt_dev->cflows = value;
-		sprintf(pg_result, "OK: flows=%u", pkt_dev->cflows);
+		WRITE_ONCE(pkt_dev->cflows, value);
+		sprintf(pg_result, "OK: flows=%u", (unsigned int)value);
 		return count;
 	}
 #ifdef CONFIG_XFRM
@@ -1909,8 +1914,8 @@ static int pktgen_thread_show(struct seq_file *seq, void *v)
 }
 
 static ssize_t pktgen_thread_write(struct file *file,
-				   const char __user * user_buffer,
-				   size_t count, loff_t * offset)
+				   const char __user *user_buffer,
+				   size_t count, loff_t *offset)
 {
 	struct seq_file *seq = file->private_data;
 	struct pktgen_thread *t = seq->private;
@@ -1962,6 +1967,7 @@ static ssize_t pktgen_thread_write(struct file *file,
 
 	if (!strcmp(name, "add_device")) {
 		char f[32];
+
 		memset(f, 0, 32);
 		max = min(sizeof(f) - 1, count - i);
 		len = strn_len(&user_buffer[i], max);
@@ -2368,7 +2374,7 @@ static inline int f_seen(const struct pktgen_dev *pkt_dev, int flow)
 	return !!(pkt_dev->flows[flow].flags & F_INIT);
 }
 
-static inline int f_pick(struct pktgen_dev *pkt_dev)
+static inline int f_pick(struct pktgen_dev *pkt_dev, unsigned int cflows)
 {
 	int flow = pkt_dev->curfl;
 
@@ -2378,11 +2384,11 @@ static inline int f_pick(struct pktgen_dev *pkt_dev)
 			pkt_dev->flows[flow].count = 0;
 			pkt_dev->flows[flow].flags = 0;
 			pkt_dev->curfl += 1;
-			if (pkt_dev->curfl >= pkt_dev->cflows)
+			if (pkt_dev->curfl >= cflows)
 				pkt_dev->curfl = 0; /*reset */
 		}
 	} else {
-		flow = get_random_u32_below(pkt_dev->cflows);
+		flow = get_random_u32_below(cflows);
 		pkt_dev->curfl = flow;
 
 		if (pkt_dev->flows[flow].count > pkt_dev->lflow) {
@@ -2397,13 +2403,14 @@ static inline int f_pick(struct pktgen_dev *pkt_dev)
 
 /* If there was already an IPSEC SA, we keep it as is, else
  * we go look for it ...
-*/
+ */
 #define DUMMY_MARK 0
 static void get_ipsec_sa(struct pktgen_dev *pkt_dev, int flow)
 {
 #ifdef CONFIG_XFRM
 	struct xfrm_state *x = pkt_dev->flows[flow].x;
 	struct pktgen_net *pn = net_generic(dev_net(pkt_dev->odev), pg_net_id);
+
 	if (!x) {
 
 		if (pkt_dev->spi) {
@@ -2436,6 +2443,7 @@ static void set_cur_queue_map(struct pktgen_dev *pkt_dev)
 
 	else if (pkt_dev->queue_map_min <= pkt_dev->queue_map_max) {
 		__u16 t;
+
 		if (pkt_dev->flags & F_QUEUE_MAP_RND) {
 			t = get_random_u32_inclusive(pkt_dev->queue_map_min,
 						     pkt_dev->queue_map_max);
@@ -2454,12 +2462,14 @@ static void set_cur_queue_map(struct pktgen_dev *pkt_dev)
  */
 static void mod_cur_headers(struct pktgen_dev *pkt_dev)
 {
+	unsigned int cflows;
 	__u32 imn;
 	__u32 imx;
 	int flow = 0;
 
-	if (pkt_dev->cflows)
-		flow = f_pick(pkt_dev);
+	cflows = READ_ONCE(pkt_dev->cflows);
+	if (cflows)
+		flow = f_pick(pkt_dev, cflows);
 
 	/*  Deal with source MAC */
 	if (pkt_dev->src_mac_count > 1) {
@@ -2517,6 +2527,7 @@ static void mod_cur_headers(struct pktgen_dev *pkt_dev)
 
 	if (pkt_dev->flags & F_MPLS_RND) {
 		unsigned int i;
+
 		for (i = 0; i < pkt_dev->nr_labels; i++)
 			if (pkt_dev->labels[i] & MPLS_STACK_BOTTOM)
 				pkt_dev->labels[i] = MPLS_STACK_BOTTOM |
@@ -2561,6 +2572,7 @@ static void mod_cur_headers(struct pktgen_dev *pkt_dev)
 		imx = ntohl(pkt_dev->saddr_max);
 		if (imn < imx) {
 			__u32 t;
+
 			if (pkt_dev->flags & F_IPSRC_RND)
 				t = get_random_u32_inclusive(imn, imx - 1);
 			else {
@@ -2573,7 +2585,7 @@ static void mod_cur_headers(struct pktgen_dev *pkt_dev)
 			pkt_dev->cur_saddr = htonl(t);
 		}
 
-		if (pkt_dev->cflows && f_seen(pkt_dev, flow)) {
+		if (cflows && f_seen(pkt_dev, flow)) {
 			pkt_dev->cur_daddr = pkt_dev->flows[flow].cur_daddr;
 		} else {
 			imn = ntohl(pkt_dev->daddr_min);
@@ -2581,6 +2593,7 @@ static void mod_cur_headers(struct pktgen_dev *pkt_dev)
 			if (imn < imx) {
 				__u32 t;
 				__be32 s;
+
 				if (pkt_dev->flags & F_IPDST_RND) {
 
 					do {
@@ -2601,7 +2614,7 @@ static void mod_cur_headers(struct pktgen_dev *pkt_dev)
 					pkt_dev->cur_daddr = htonl(t);
 				}
 			}
-			if (pkt_dev->cflows) {
+			if (cflows) {
 				pkt_dev->flows[flow].flags |= F_INIT;
 				pkt_dev->flows[flow].cur_daddr =
 				    pkt_dev->cur_daddr;
@@ -2628,6 +2641,7 @@ static void mod_cur_headers(struct pktgen_dev *pkt_dev)
 
 	if (pkt_dev->min_pkt_size < pkt_dev->max_pkt_size) {
 		__u32 t;
+
 		if (pkt_dev->flags & F_TXSIZE_RND) {
 			t = get_random_u32_inclusive(pkt_dev->min_pkt_size,
 						     pkt_dev->max_pkt_size - 1);
@@ -2694,7 +2708,8 @@ static int pktgen_output_ipsec(struct sk_buff *skb, struct pktgen_dev *pkt_dev)
 	if (!x)
 		return 0;
 	/* XXX: we dont support tunnel mode for now until
-	 * we resolve the dst issue */
+	 * we resolve the dst issue
+	 */
 	if ((x->props.mode != XFRM_MODE_TRANSPORT) && (pkt_dev->spi == 0))
 		return 0;
 
@@ -2729,8 +2744,10 @@ static void free_SAs(struct pktgen_dev *pkt_dev)
 	if (pkt_dev->cflows) {
 		/* let go of the SAs if we have them */
 		int i;
+
 		for (i = 0; i < pkt_dev->cflows; i++) {
 			struct xfrm_state *x = pkt_dev->flows[i].x;
+
 			if (x) {
 				xfrm_state_put(x);
 				pkt_dev->flows[i].x = NULL;
@@ -2745,6 +2762,7 @@ static int process_ipsec(struct pktgen_dev *pkt_dev,
 	if (pkt_dev->flags & F_IPSEC) {
 		struct xfrm_state *x = pkt_dev->flows[pkt_dev->curfl].x;
 		int nhead = 0;
+
 		if (x) {
 			struct ethhdr *eth;
 			struct iphdr *iph;
@@ -2788,6 +2806,7 @@ err:
 static void mpls_push(__be32 *mpls, struct pktgen_dev *pkt_dev)
 {
 	unsigned int i;
+
 	for (i = 0; i < pkt_dev->nr_labels; i++)
 		*mpls++ = pkt_dev->labels[i] & ~MPLS_STACK_BOTTOM;
 
@@ -2827,8 +2846,7 @@ static void pktgen_finalize_skb(struct pktgen_dev *pkt_dev, struct sk_buff *skb,
 		}
 
 		i = 0;
-		frag_len = (datalen/frags) < PAGE_SIZE ?
-			   (datalen/frags) : PAGE_SIZE;
+		frag_len = min_t(int, datalen / frags, PAGE_SIZE);
 		while (datalen > 0) {
 			if (unlikely(!pkt_dev->page)) {
 				int node = numa_node_id();
@@ -2845,8 +2863,7 @@ static void pktgen_finalize_skb(struct pktgen_dev *pkt_dev, struct sk_buff *skb,
 			if (i == (frags - 1))
 				skb_frag_fill_page_desc(&skb_shinfo(skb)->frags[i],
 							pkt_dev->page, 0,
-							(datalen < PAGE_SIZE ?
-							 datalen : PAGE_SIZE));
+							min(datalen, PAGE_SIZE));
 			else
 				skb_frag_fill_page_desc(&skb_shinfo(skb)->frags[i],
 							pkt_dev->page, 0, frag_len);
@@ -2900,7 +2917,7 @@ static struct sk_buff *pktgen_alloc_skb(struct net_device *dev,
 			skb->dev = dev;
 		}
 	} else {
-		 skb = __netdev_alloc_skb(dev, size, GFP_NOWAIT);
+		skb = __netdev_alloc_skb(dev, size, GFP_NOWAIT);
 	}
 
 	/* the caller pre-fetches from skb->data and reserves for the mac hdr */
@@ -2981,7 +2998,7 @@ static struct sk_buff *fill_packet_ipv4(struct net_device *odev,
 	skb->priority = pkt_dev->skb_priority;
 
 	memcpy(eth, pkt_dev->hh, 12);
-	*(__be16 *) & eth[12] = protocol;
+	*(__be16 *)&eth[12] = protocol;
 
 	/* Eth + IPh + UDPh + mpls */
 	datalen = pkt_dev->cur_pkt_size - 14 - 20 - 8 -
@@ -2991,7 +3008,7 @@ static struct sk_buff *fill_packet_ipv4(struct net_device *odev,
 
 	udph->source = htons(pkt_dev->cur_udp_src);
 	udph->dest = htons(pkt_dev->cur_udp_dst);
-	udph->len = htons(datalen + 8);	/* DATA + udphdr */
+	udp_set_len_short(udph, datalen + 8);	/* DATA + udphdr */
 	udph->check = 0;
 
 	iph->ihl = 5;
@@ -3124,7 +3141,7 @@ static struct sk_buff *fill_packet_ipv6(struct net_device *odev,
 	udplen = datalen + sizeof(struct udphdr);
 	udph->source = htons(pkt_dev->cur_udp_src);
 	udph->dest = htons(pkt_dev->cur_udp_dst);
-	udph->len = htons(udplen);
+	udp_set_len_short(udph, udplen);
 	udph->check = 0;
 
 	*(__be32 *) iph = htonl(0x60000000);	/* Version + flow */
@@ -3210,11 +3227,11 @@ static void pktgen_run(struct pktgen_thread *t)
 
 			set_pkt_overhead(pkt_dev);
 
-			strcpy(pkt_dev->result, "Starting");
+			strscpy(pkt_dev->result, "Starting");
 			pkt_dev->running = 1;	/* Cranke yeself! */
 			started++;
 		} else
-			strcpy(pkt_dev->result, "Error starting");
+			strscpy(pkt_dev->result, "Error starting");
 	}
 	rcu_read_unlock();
 	if (started)
@@ -3473,6 +3490,7 @@ static void pktgen_rem_thread(struct pktgen_thread *t)
 static void pktgen_resched(struct pktgen_dev *pkt_dev)
 {
 	ktime_t idle_start = ktime_get();
+
 	schedule();
 	pkt_dev->idle_acc += ktime_to_ns(ktime_sub(ktime_get(), idle_start));
 }
@@ -3788,7 +3806,8 @@ static int add_dev_to_thread(struct pktgen_thread *t,
 	 * userspace on another CPU than the kthread.  The if_lock()
 	 * is used here to sync with concurrent instances of
 	 * _rem_dev_from_if_list() invoked via kthread, which is also
-	 * updating the if_list */
+	 * updating the if_list
+	 */
 	if_lock(t);
 
 	if (pkt_dev->pg_thread) {
@@ -3826,7 +3845,7 @@ static int pktgen_add_device(struct pktgen_thread *t, const char *ifname)
 	if (!pkt_dev)
 		return -ENOMEM;
 
-	strcpy(pkt_dev->odevname, ifname);
+	strscpy(pkt_dev->odevname, ifname);
 	pkt_dev->flows = vzalloc_node(array_size(MAX_CFLOWS,
 						 sizeof(struct flow_state)),
 				      node);
@@ -3956,6 +3975,7 @@ static void _rem_dev_from_if_list(struct pktgen_thread *t,
 	struct pktgen_dev *p;
 
 	if_lock(t);
+	proc_remove(pkt_dev->entry);
 	list_for_each_safe(q, n, &t->if_list) {
 		p = list_entry(q, struct pktgen_dev, list);
 		if (p == pkt_dev)
@@ -3983,10 +4003,8 @@ static int pktgen_remove_device(struct pktgen_thread *t,
 
 	/* Remove proc before if_list entry, because add_device uses
 	 * list to determine if interface already exist, avoid race
-	 * with proc_create_data() */
-	proc_remove(pkt_dev->entry);
-
-	/* And update the thread if_list */
+	 * with proc_create_data()
+	 */
 	_rem_dev_from_if_list(t, pkt_dev);
 
 #ifdef CONFIG_XFRM

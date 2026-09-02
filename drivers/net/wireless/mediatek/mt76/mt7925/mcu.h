@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: ISC */
+/* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /* Copyright (C) 2023 MediaTek Inc. */
 
 #ifndef __MT7925_MCU_H
@@ -104,13 +104,6 @@ enum {
 	MT7925_TM_WIFISPECTRUM,
 };
 
-struct mt7925_rftest_cmd {
-	u8 action;
-	u8 rsv[3];
-	__le32 param0;
-	__le32 param1;
-} __packed;
-
 struct mt7925_rftest_evt {
 	__le32 param0;
 	__le32 param1;
@@ -150,13 +143,22 @@ enum {
 };
 
 enum {
-	UNI_MBMC_SETTING,
+	UNI_MBMC_SETTING = 0,
+	UNI_MBMC_NO_RESP_SETTING = 1,
 };
 
 enum {
 	UNI_EVENT_SCAN_DONE_BASIC = 0,
 	UNI_EVENT_SCAN_DONE_CHNLINFO = 2,
 	UNI_EVENT_SCAN_DONE_NLO = 3,
+};
+
+enum {
+	UNI_CMD_RSSI_MONITOR_SET = 0,
+};
+
+enum {
+	UNI_EVENT_RSSI_MONITOR_INFO = 0,
 };
 
 enum connac3_mcu_cipher_type {
@@ -171,6 +173,27 @@ enum connac3_mcu_cipher_type {
 	CONNAC3_CIPHER_CCMP_256 = 10,
 	CONNAC3_CIPHER_GCMP = 11,
 	CONNAC3_CIPHER_GCMP_256 = 12,
+};
+
+enum DMASHDL_GROUP_IDX {
+	DMASHDL_GROUP_0 = 0,
+	DMASHDL_GROUP_1,
+	DMASHDL_GROUP_2,
+	DMASHDL_GROUP_3,
+	DMASHDL_GROUP_4,
+	DMASHDL_GROUP_5,
+	DMASHDL_GROUP_6,
+	DMASHDL_GROUP_7,
+	DMASHDL_GROUP_8,
+	DMASHDL_GROUP_9,
+	DMASHDL_GROUP_10,
+	DMASHDL_GROUP_11,
+	DMASHDL_GROUP_12,
+	DMASHDL_GROUP_13,
+	DMASHDL_GROUP_14,
+	DMASHDL_GROUP_15,
+	DMASHDL_GROUP_NUM,
+	DMASHDL_LITE_GROUP_NUM = 64
 };
 
 struct mt7925_mcu_scan_chinfo_event {
@@ -196,6 +219,7 @@ enum {
 	UNI_SNIFFER_CONFIG,
 };
 
+#define MT7925_RNR_SCAN_MAX_BSSIDS	10
 struct scan_hdr_tlv {
 	/* fixed field */
 	u8 seq_num;
@@ -223,7 +247,7 @@ struct scan_req_tlv {
 	__le16 timeout_value;
 	__le16 probe_delay_time;
 	__le32 func_mask_ext;
-};
+} __packed;
 
 struct scan_ssid_tlv {
 	__le16 tag;
@@ -235,9 +259,10 @@ struct scan_ssid_tlv {
 		       * BIT(2) + ssid_type_ext BIT(0) specified SSID only
 		       */
 	u8 ssids_num;
-	u8 pad[2];
-	struct mt76_connac_mcu_scan_ssid ssids[4];
-};
+	u8 is_short_ssid;
+	u8 pad;
+	struct mt76_connac_mcu_scan_ssid ssids[MT7925_RNR_SCAN_MAX_BSSIDS];
+} __packed;
 
 struct scan_bssid_tlv {
 	__le16 tag;
@@ -247,8 +272,9 @@ struct scan_bssid_tlv {
 	u8 match_ch;
 	u8 match_ssid_ind;
 	u8 rcpi;
-	u8 pad[3];
-};
+	u8 match_short_ssid_ind;
+	u8 pad[2];
+} __packed;
 
 struct scan_chan_info_tlv {
 	__le16 tag;
@@ -264,7 +290,7 @@ struct scan_chan_info_tlv {
 	u8 channels_num; /* valid when channel_type is 4 */
 	u8 pad[2];
 	struct mt76_connac_mcu_scan_channel channels[64];
-};
+} __packed;
 
 struct scan_ie_tlv {
 	__le16 tag;
@@ -273,7 +299,7 @@ struct scan_ie_tlv {
 	__le16 ies_len;
 	u8 band;
 	u8 pad;
-	u8 ies[MT76_CONNAC_SCAN_IE_LEN];
+	u8 ies[];
 };
 
 struct scan_misc_tlv {
@@ -370,6 +396,19 @@ struct bss_mld_tlv {
 	u8 max_link_num;
 	u8 hybrid_mode;
 	u8 __rsv[3];
+} __packed;
+
+struct bss_eht_tlv {
+	__le16 tag;
+	__le16 len;
+	u8  is_eht_op_present;
+	u8  is_eth_dscb_present;
+	u8  eht_ctrl;
+	u8  eht_ccfs0;
+	u8  eht_ccfs1;
+	u8  pad1;
+	__le16 eht_dis_sub_chan_bitmap;
+	u8  pad2[4];
 } __packed;
 
 struct sta_rec_ba_uni {
@@ -569,6 +608,9 @@ struct mt7925_wow_pattern_tlv {
 	u8 rsv[4];
 };
 
+#define MT7925_WOW_PATTERN_TLV_V2_SIZE	\
+	(offsetof(struct mt7925_wow_pattern_tlv, rsv) + 3)
+
 struct roc_acquire_tlv {
 	__le16 tag;
 	__le16 len;
@@ -587,6 +629,47 @@ struct roc_acquire_tlv {
 	__le32 maxinterval;
 	u8 dbdcband;
 	u8 rsv[3];
+} __packed;
+
+enum ENUM_CMD_TEST_CTRL_ACT {
+	CMD_TEST_CTRL_ACT_SWITCH_MODE = 0,
+	CMD_TEST_CTRL_ACT_SET_AT = 1,
+	CMD_TEST_CTRL_ACT_GET_AT = 2,
+	CMD_TEST_CTRL_ACT_SET_AT_ENG = 3,
+	CMD_TEST_CTRL_ACT_GET_AT_ENG = 4,
+	CMD_TEST_CTRL_ACT_NUM
+};
+
+enum ENUM_CMD_TEST_CTRL_ACT_SWITCH_MODE_OP {
+	CMD_TEST_CTRL_ACT_SWITCH_MODE_NORMAL = 0,
+	CMD_TEST_CTRL_ACT_SWITCH_MODE_RF_TEST = 1,
+	CMD_TEST_CTRL_ACT_SWITCH_MODE_ICAP = 2,
+	CMD_TEST_CTRL_ACT_SWITCH_MODE_NUM
+};
+
+union testmode_data {
+	__le32 op_mode;
+	__le32 channel_freq;
+	u8 rf_at_info[84];
+};
+
+union testmode_evt {
+	__le32 op_mode;
+	__le32 channel_freq;
+	u8 rf_at_info[1024];
+};
+
+struct uni_cmd_testmode_ctrl {
+	u16 tag;
+	u16 length;
+	u8 action;
+	u8 reserved[3];
+	union testmode_data data;
+} __packed;
+
+struct mt7925_rftest_cmd {
+	u8 padding[4];
+	struct uni_cmd_testmode_ctrl ctrl;
 } __packed;
 
 static inline enum connac3_mcu_cipher_type
@@ -616,6 +699,25 @@ mt7925_mcu_get_cipher(int cipher)
 	}
 }
 
+static inline bool
+mt7925_mcu_tlv_valid(struct tlv *tlv, u32 rem)
+{
+	u16 len;
+
+	if (rem < sizeof(*tlv))
+		return false;
+
+	len = le16_to_cpu(tlv->len);
+
+	/* a length below the header size would not advance the cursor */
+	return len >= sizeof(*tlv) && len <= rem;
+}
+
+#define mt7925_for_each_tlv(tlv, rem)					\
+	for (; mt7925_mcu_tlv_valid(tlv, rem);				\
+	     (rem) -= le16_to_cpu((tlv)->len),				\
+	     (tlv) = (struct tlv *)((u8 *)(tlv) + le16_to_cpu((tlv)->len)))
+
 int mt7925_mcu_set_dbdc(struct mt76_phy *phy, bool enable);
 int mt7925_mcu_hw_scan(struct mt76_phy *phy, struct ieee80211_vif *vif,
 		       struct ieee80211_scan_request *scan_req);
@@ -623,7 +725,8 @@ int mt7925_mcu_cancel_hw_scan(struct mt76_phy *phy,
 			      struct ieee80211_vif *vif);
 int mt7925_mcu_sched_scan_req(struct mt76_phy *phy,
 			      struct ieee80211_vif *vif,
-			      struct cfg80211_sched_scan_request *sreq);
+			      struct cfg80211_sched_scan_request *sreq,
+			      struct ieee80211_scan_ies *ies);
 int mt7925_mcu_sched_scan_enable(struct mt76_phy *phy,
 				 struct ieee80211_vif *vif,
 				 bool enable);
@@ -634,14 +737,25 @@ int mt7925_mcu_add_bss_info(struct mt792x_phy *phy,
 			    struct ieee80211_bss_conf *link_conf,
 			    struct ieee80211_link_sta *link_sta,
 			    int enable);
+int mt7925_mcu_add_bss_info_sta(struct mt792x_phy *phy,
+				struct ieee80211_chanctx_conf *ctx,
+				struct ieee80211_bss_conf *link_conf,
+				struct ieee80211_link_sta *link_sta,
+				u16 bmc_tx_wlan_idx,
+				u16 sta_wlan_idx,
+				int enable);
 int mt7925_mcu_set_timing(struct mt792x_phy *phy,
 			  struct ieee80211_bss_conf *link_conf);
 int mt7925_mcu_set_deep_sleep(struct mt792x_dev *dev, bool enable);
+int mt7925_mcu_set_thermal_protect(struct mt792x_dev *dev);
 int mt7925_mcu_set_channel_domain(struct mt76_phy *phy);
 int mt7925_mcu_set_radio_en(struct mt792x_phy *phy, bool enable);
 int mt7925_mcu_set_chctx(struct mt76_phy *phy, struct mt76_vif_link *mvif,
 			 struct ieee80211_bss_conf *link_conf,
 			 struct ieee80211_chanctx_conf *ctx);
+int mt7925_mcu_set_eht_pp(struct mt76_phy *phy, struct mt76_vif_link *mvif,
+			  struct ieee80211_bss_conf *link_conf,
+			  struct ieee80211_chanctx_conf *ctx);
 int mt7925_mcu_set_rate_txpower(struct mt76_phy *phy);
 int mt7925_mcu_update_arp_filter(struct mt76_dev *dev,
 				 struct ieee80211_bss_conf *link_conf);

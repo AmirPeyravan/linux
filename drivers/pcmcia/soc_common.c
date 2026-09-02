@@ -32,8 +32,8 @@
 
 
 #include <linux/cpufreq.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
+#include <linux/gpio/legacy.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -460,7 +460,7 @@ static void soc_common_check_status(struct soc_pcmcia_socket *skt)
 /* Let's poll for events in addition to IRQs since IRQ only is unreliable... */
 static void soc_common_pcmcia_poll_event(struct timer_list *t)
 {
-	struct soc_pcmcia_socket *skt = from_timer(skt, t, poll_timer);
+	struct soc_pcmcia_socket *skt = timer_container_of(skt, t, poll_timer);
 	debug(skt, 4, "polling for events\n");
 
 	mod_timer(&skt->poll_timer, jiffies + SOC_PCMCIA_POLL_PERIOD);

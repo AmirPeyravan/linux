@@ -85,7 +85,7 @@
 		};
 	};
 
-	sgtl5000_clk: sgtl5000-oscillator  {
+	sgtl5000_clk: sgtl5000-oscillator {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
 			clock-frequency = <24576000>;
@@ -309,14 +309,6 @@
 
 &uart2 {
 	rts-gpios = <&gpio2 RK_PC3 GPIO_ACTIVE_HIGH>;
-	status = "okay";
-};
-
-&usb_host0_ehci {
-	status = "okay";
-};
-
-&usb_host0_ohci {
 	status = "okay";
 };
 

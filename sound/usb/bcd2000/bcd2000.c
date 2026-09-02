@@ -134,6 +134,9 @@ static void bcd2000_midi_send(struct bcd2000 *bcd2k)
 	if (!midi_out_substream)
 		return;
 
+	if (!bcd2k->midi_out_urb)
+		return;
+
 	/* copy command prefix bytes */
 	memcpy(bcd2k->midi_out_buf, device_cmd_prefix,
 		sizeof(device_cmd_prefix));
@@ -178,7 +181,7 @@ static int bcd2000_midi_output_close(struct snd_rawmidi_substream *substream)
 {
 	struct bcd2000 *bcd2k = substream->rmidi->private_data;
 
-	if (bcd2k->midi_out_active) {
+	if (bcd2k->midi_out_active && bcd2k->midi_out_urb) {
 		usb_kill_urb(bcd2k->midi_out_urb);
 		bcd2k->midi_out_active = 0;
 	}
@@ -348,11 +351,13 @@ static int bcd2000_init_midi(struct bcd2000 *bcd2k)
 static void bcd2000_free_usb_related_resources(struct bcd2000 *bcd2k,
 						struct usb_interface *interface)
 {
-	usb_kill_urb(bcd2k->midi_out_urb);
-	usb_kill_urb(bcd2k->midi_in_urb);
+	usb_poison_urb(bcd2k->midi_out_urb);
+	usb_poison_urb(bcd2k->midi_in_urb);
 
 	usb_free_urb(bcd2k->midi_out_urb);
 	usb_free_urb(bcd2k->midi_in_urb);
+	bcd2k->midi_out_urb = NULL;
+	bcd2k->midi_in_urb = NULL;
 
 	if (bcd2k->intf) {
 		usb_set_intfdata(bcd2k->intf, NULL);
@@ -369,23 +374,19 @@ static int bcd2000_probe(struct usb_interface *interface,
 	char usb_path[32];
 	int err;
 
-	mutex_lock(&devices_mutex);
+	guard(mutex)(&devices_mutex);
 
 	for (card_index = 0; card_index < SNDRV_CARDS; ++card_index)
 		if (!test_bit(card_index, devices_used))
 			break;
 
-	if (card_index >= SNDRV_CARDS) {
-		mutex_unlock(&devices_mutex);
+	if (card_index >= SNDRV_CARDS)
 		return -ENOENT;
-	}
 
 	err = snd_card_new(&interface->dev, index[card_index], id[card_index],
 			THIS_MODULE, sizeof(*bcd2k), &card);
-	if (err < 0) {
-		mutex_unlock(&devices_mutex);
+	if (err < 0)
 		return err;
-	}
 
 	bcd2k = card->private_data;
 	bcd2k->dev = interface_to_usbdev(interface);
@@ -413,14 +414,12 @@ static int bcd2000_probe(struct usb_interface *interface,
 	usb_set_intfdata(interface, bcd2k);
 	set_bit(card_index, devices_used);
 
-	mutex_unlock(&devices_mutex);
 	return 0;
 
 probe_error:
 	dev_info(&bcd2k->dev->dev, PREFIX "error during probing");
 	bcd2000_free_usb_related_resources(bcd2k, interface);
 	snd_card_free(card);
-	mutex_unlock(&devices_mutex);
 	return err;
 }
 
@@ -431,7 +430,7 @@ static void bcd2000_disconnect(struct usb_interface *interface)
 	if (!bcd2k)
 		return;
 
-	mutex_lock(&devices_mutex);
+	guard(mutex)(&devices_mutex);
 
 	/* make sure that userspace cannot create new requests */
 	snd_card_disconnect(bcd2k->card);
@@ -441,8 +440,6 @@ static void bcd2000_disconnect(struct usb_interface *interface)
 	clear_bit(bcd2k->card_index, devices_used);
 
 	snd_card_free_when_closed(bcd2k->card);
-
-	mutex_unlock(&devices_mutex);
 }
 
 static struct usb_driver bcd2000_driver = {

@@ -3155,7 +3155,7 @@ class TestProps:
 			dev = f[0]
 			props[dev] = DevProps()
 			props[dev].altname = f[1]
-			if int(f[2]):
+			if len(f) > 2 and f[2] and int(f[2]):
 				props[dev].isasync = True
 			else:
 				props[dev].isasync = False
@@ -4017,7 +4017,8 @@ def parseKernelLog(data):
 							'PM: early restore of devices complete after.*'],
 		'resume_complete': ['PM: resume of devices complete after.*',
 							'PM: restore of devices complete after.*'],
-		    'post_resume': [r'.*Restarting tasks \.\.\..*'],
+		    'post_resume': [r'.*Restarting tasks \.\.\..*',
+							'Done restarting tasks.*'],
 	}
 
 	# action table (expected events that occur and show up in dmesg)

@@ -43,6 +43,7 @@ struct blk_crypto_keyslot {
 };
 
 static inline void blk_crypto_hw_enter(struct blk_crypto_profile *profile)
+	__acquires(&profile->lock)
 {
 	/*
 	 * Calling into the driver requires profile->lock held and the device
@@ -55,6 +56,7 @@ static inline void blk_crypto_hw_enter(struct blk_crypto_profile *profile)
 }
 
 static inline void blk_crypto_hw_exit(struct blk_crypto_profile *profile)
+	__releases(&profile->lock)
 {
 	up_write(&profile->lock);
 	if (profile->dev)
@@ -93,8 +95,7 @@ int blk_crypto_profile_init(struct blk_crypto_profile *profile,
 
 	/* Initialize keyslot management data. */
 
-	profile->slots = kvcalloc(num_slots, sizeof(profile->slots[0]),
-				  GFP_KERNEL);
+	profile->slots = kvzalloc_objs(profile->slots[0], num_slots);
 	if (!profile->slots)
 		goto err_destroy;
 
@@ -121,8 +122,7 @@ int blk_crypto_profile_init(struct blk_crypto_profile *profile,
 
 	profile->log_slot_ht_size = ilog2(slot_hashtable_size);
 	profile->slot_hashtable =
-		kvmalloc_array(slot_hashtable_size,
-			       sizeof(profile->slot_hashtable[0]), GFP_KERNEL);
+		kvmalloc_objs(profile->slot_hashtable[0], slot_hashtable_size);
 	if (!profile->slot_hashtable)
 		goto err_destroy;
 	for (i = 0; i < slot_hashtable_size; i++)
@@ -335,28 +335,6 @@ void blk_crypto_put_keyslot(struct blk_crypto_keyslot *slot)
 	}
 }
 
-/**
- * __blk_crypto_cfg_supported() - Check whether the given crypto profile
- *				  supports the given crypto configuration.
- * @profile: the crypto profile to check
- * @cfg: the crypto configuration to check for
- *
- * Return: %true if @profile supports the given @cfg.
- */
-bool __blk_crypto_cfg_supported(struct blk_crypto_profile *profile,
-				const struct blk_crypto_config *cfg)
-{
-	if (!profile)
-		return false;
-	if (!(profile->modes_supported[cfg->crypto_mode] & cfg->data_unit_size))
-		return false;
-	if (profile->max_dun_bytes_supported < cfg->dun_bytes)
-		return false;
-	if (!(profile->key_types_supported & cfg->key_type))
-		return false;
-	return true;
-}
-
 /*
  * This is an internal function that evicts a key from an inline encryption
  * device that can be either a real device or the blk-crypto-fallback "device".
@@ -501,6 +479,7 @@ int blk_crypto_derive_sw_secret(struct block_device *bdev,
 	blk_crypto_hw_exit(profile);
 	return err;
 }
+EXPORT_SYMBOL_GPL(blk_crypto_derive_sw_secret);
 
 int blk_crypto_import_key(struct blk_crypto_profile *profile,
 			  const u8 *raw_key, size_t raw_key_size,
@@ -520,6 +499,7 @@ int blk_crypto_import_key(struct blk_crypto_profile *profile,
 	blk_crypto_hw_exit(profile);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(blk_crypto_import_key);
 
 int blk_crypto_generate_key(struct blk_crypto_profile *profile,
 			    u8 lt_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE])
@@ -537,6 +517,7 @@ int blk_crypto_generate_key(struct blk_crypto_profile *profile,
 	blk_crypto_hw_exit(profile);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(blk_crypto_generate_key);
 
 int blk_crypto_prepare_key(struct blk_crypto_profile *profile,
 			   const u8 *lt_key, size_t lt_key_size,
@@ -556,6 +537,7 @@ int blk_crypto_prepare_key(struct blk_crypto_profile *profile,
 	blk_crypto_hw_exit(profile);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(blk_crypto_prepare_key);
 
 /**
  * blk_crypto_intersect_capabilities() - restrict supported crypto capabilities

@@ -20,7 +20,7 @@
 #include <linux/mmc/host.h>
 #include <linux/platform_data/sh_mmcif.h>
 #include <linux/mtd/physmap.h>
-#include <linux/gpio.h>
+#include <linux/gpio/legacy.h>
 #include <linux/gpio/machine.h>
 #include <linux/platform_data/gpio_backlight.h>
 #include <linux/platform_data/tmio.h>
@@ -825,6 +825,7 @@ static struct spi_board_info spi_bus[] = {
 /* MSIOF0 */
 static struct sh_msiof_spi_info msiof0_data = {
 	.num_chipselect = 1,
+	.mode = MSIOF_SPI_HOST,
 };
 
 static struct resource msiof0_resources[] = {

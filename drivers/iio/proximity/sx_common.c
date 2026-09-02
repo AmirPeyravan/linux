@@ -379,8 +379,8 @@ static irqreturn_t sx_common_trigger_handler(int irq, void *private)
 		data->buffer.channels[i++] = val;
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->buffer,
-					   pf->timestamp);
+	iio_push_to_buffers_with_ts(indio_dev, &data->buffer,
+				    sizeof(data->buffer), pf->timestamp);
 
 out:
 	mutex_unlock(&data->mutex);
@@ -517,7 +517,7 @@ int sx_common_probe(struct i2c_client *client,
 						IRQF_ONESHOT,
 						"sx_event", indio_dev);
 		if (ret)
-			return dev_err_probe(dev, ret, "No IRQ\n");
+			return ret;
 
 		data->trig = devm_iio_trigger_alloc(dev, "%s-dev%d",
 						    indio_dev->name,

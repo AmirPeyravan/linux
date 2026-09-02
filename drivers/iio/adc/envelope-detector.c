@@ -31,7 +31,6 @@
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
 #include <linux/iio/consumer.h>
 #include <linux/iio/iio.h>
@@ -305,7 +304,7 @@ static const struct iio_chan_spec_ext_info envelope_detector_ext_info[] = {
 	{ .name = "compare_interval",
 	  .read = envelope_show_comp_interval,
 	  .write = envelope_store_comp_interval, },
-	{ /* sentinel */ }
+	{ }
 };
 
 static const struct iio_chan_spec envelope_detector_iio_channel = {
@@ -390,7 +389,7 @@ static int envelope_detector_probe(struct platform_device *pdev)
 
 static const struct of_device_id envelope_detector_match[] = {
 	{ .compatible = "axentia,tse850-envelope-detector", },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, envelope_detector_match);
 
@@ -406,3 +405,4 @@ module_platform_driver(envelope_detector_driver);
 MODULE_DESCRIPTION("Envelope detector using a DAC and a comparator");
 MODULE_AUTHOR("Peter Rosin <peda@axentia.se>");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_CONSUMER");

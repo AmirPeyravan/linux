@@ -10,7 +10,6 @@
 
 #include <linux/err.h>
 #include <linux/gcd.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -514,7 +513,7 @@ static const struct of_device_id rescale_match[] = {
 	  .data = &rescale_cfg[TEMP_SENSE_RTD], },
 	{ .compatible = "temperature-transducer",
 	  .data = &rescale_cfg[TEMP_TRANSDUCER], },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rescale_match);
 
@@ -609,3 +608,4 @@ module_platform_driver(rescale_driver);
 MODULE_DESCRIPTION("IIO rescale driver");
 MODULE_AUTHOR("Peter Rosin <peda@axentia.se>");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_CONSUMER");

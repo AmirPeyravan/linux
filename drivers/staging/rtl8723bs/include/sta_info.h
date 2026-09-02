@@ -86,7 +86,7 @@ struct sta_info {
 	uint qos_option;
 	u8 hwaddr[ETH_ALEN];
 
-	uint	ieee8021x_blocked;	/* 0: allowed, 1:blocked */
+	bool ieee8021x_blocked;
 	uint	dot118021XPrivacy; /* aes, tkip... */
 	union Keytype	dot11tkiptxmickey;
 	union Keytype	dot11tkiprxmickey;
@@ -214,7 +214,7 @@ struct sta_info {
 	/*  */
 
 	/* To store the sequence number of received management frame */
-	u16 RxMgmtFrameSeqNum;
+	u16 rx_mgmt_frame_seq_num;
 };
 
 #define sta_rx_pkts(sta) \

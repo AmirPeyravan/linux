@@ -22,17 +22,26 @@
 
 #include "dp/dp_hw.h"
 
+#define HIBMC_MIN_VECTORS	1
+#define HIBMC_MAX_VECTORS	2
+
 struct hibmc_vdac {
 	struct drm_device *dev;
 	struct drm_encoder encoder;
 	struct drm_connector connector;
 	struct i2c_adapter adapter;
 	struct i2c_algo_bit_data bit_data;
+	int phys_status;
 };
 
 struct hibmc_drm_private {
 	/* hw */
 	void __iomem   *mmio;
+
+	/* vram */
+	void __iomem *vram;
+	resource_size_t	vram_base;
+	resource_size_t	vram_size;
 
 	/* drm */
 	struct drm_device dev;
@@ -45,6 +54,11 @@ struct hibmc_drm_private {
 static inline struct hibmc_vdac *to_hibmc_vdac(struct drm_connector *connector)
 {
 	return container_of(connector, struct hibmc_vdac, connector);
+}
+
+static inline struct hibmc_dp *to_hibmc_dp(struct drm_connector *connector)
+{
+	return container_of(connector, struct hibmc_dp, connector);
 }
 
 static inline struct hibmc_drm_private *to_hibmc_drm_private(struct drm_device *dev)
@@ -61,7 +75,12 @@ int hibmc_de_init(struct hibmc_drm_private *priv);
 int hibmc_vdac_init(struct hibmc_drm_private *priv);
 
 int hibmc_ddc_create(struct drm_device *drm_dev, struct hibmc_vdac *connector);
+void hibmc_ddc_del(struct hibmc_vdac *vdac);
 
 int hibmc_dp_init(struct hibmc_drm_private *priv);
+
+void hibmc_debugfs_init(struct drm_connector *connector, struct dentry *root);
+
+irqreturn_t hibmc_dp_hpd_isr(int irq, void *arg);
 
 #endif

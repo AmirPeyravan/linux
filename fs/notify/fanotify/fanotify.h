@@ -2,6 +2,7 @@
 #include <linux/fsnotify_backend.h>
 #include <linux/path.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/exportfs.h>
 #include <linux/hashtable.h>
 
@@ -25,7 +26,7 @@ enum {
  * stored in either the first or last 2 dwords.
  */
 #define FANOTIFY_INLINE_FH_LEN	(3 << 2)
-#define FANOTIFY_FH_HDR_LEN	offsetof(struct fanotify_fh, buf)
+#define FANOTIFY_FH_HDR_LEN	sizeof(struct fanotify_fh)
 
 /* Fixed size struct for file handle */
 struct fanotify_fh {
@@ -34,7 +35,6 @@ struct fanotify_fh {
 #define FANOTIFY_FH_FLAG_EXT_BUF 1
 	u8 flags;
 	u8 pad;
-	unsigned char buf[];
 } __aligned(4);
 
 /* Variable size struct for dir file handle + child file handle + name */
@@ -92,7 +92,7 @@ static inline char **fanotify_fh_ext_buf_ptr(struct fanotify_fh *fh)
 	BUILD_BUG_ON(FANOTIFY_FH_HDR_LEN % 4);
 	BUILD_BUG_ON(__alignof__(char *) - 4 + sizeof(char *) >
 		     FANOTIFY_INLINE_FH_LEN);
-	return (char **)ALIGN((unsigned long)(fh->buf), __alignof__(char *));
+	return (char **)ALIGN((unsigned long)(fh + 1), __alignof__(char *));
 }
 
 static inline void *fanotify_fh_ext_buf(struct fanotify_fh *fh)
@@ -102,7 +102,7 @@ static inline void *fanotify_fh_ext_buf(struct fanotify_fh *fh)
 
 static inline void *fanotify_fh_buf(struct fanotify_fh *fh)
 {
-	return fanotify_fh_has_ext_buf(fh) ? fanotify_fh_ext_buf(fh) : fh->buf;
+	return fanotify_fh_has_ext_buf(fh) ? fanotify_fh_ext_buf(fh) : fh + 1;
 }
 
 static inline int fanotify_info_dir_fh_len(struct fanotify_info *info)
@@ -219,7 +219,7 @@ static inline void fanotify_info_copy_name(struct fanotify_info *info,
 		return;
 
 	info->name_len = name->len;
-	strcpy(fanotify_info_name(info), name->name);
+	strscpy(fanotify_info_name(info), name->name, name->len + 1);
 }
 
 static inline void fanotify_info_copy_name2(struct fanotify_info *info,
@@ -229,7 +229,7 @@ static inline void fanotify_info_copy_name2(struct fanotify_info *info,
 		return;
 
 	info->name2_len = name->len;
-	strcpy(fanotify_info_name2(info), name->name);
+	strscpy(fanotify_info_name2(info), name->name, name->len + 1);
 }
 
 /*
@@ -278,7 +278,7 @@ static inline void fanotify_init_event(struct fanotify_event *event,
 #define FANOTIFY_INLINE_FH(name, size)					\
 struct {								\
 	struct fanotify_fh name;					\
-	/* Space for object_fh.buf[] - access with fanotify_fh_buf() */	\
+	/* Space for filehandle - access with fanotify_fh_buf() */	\
 	unsigned char _inline_fh_buf[size];				\
 }
 
@@ -428,6 +428,8 @@ FANOTIFY_ME(struct fanotify_event *event)
 	return container_of(event, struct fanotify_mnt_event, fae);
 }
 
+#define FANOTIFY_NO_RANGE	((loff_t)-1)
+
 /*
  * Structure for permission fanotify events. It gets allocated and freed in
  * fanotify_handle_event() since we wait there for user response. When the
@@ -438,11 +440,13 @@ FANOTIFY_ME(struct fanotify_event *event)
 struct fanotify_perm_event {
 	struct fanotify_event fae;
 	struct path path;
-	const loff_t *ppos;		/* optional file range info */
+	loff_t pos;			/* FANOTIFY_NO_RANGE if unavailable */
 	size_t count;
 	u32 response;			/* userspace answer to the event */
 	unsigned short state;		/* state of the event */
+	unsigned short watchdog_cnt;	/* already scanned by watchdog? */
 	int fd;		/* fd we passed to userspace for this event */
+	pid_t recv_pid;	/* pid of task receiving the event */
 	union {
 		struct fanotify_response_info_header hdr;
 		struct fanotify_response_info_audit_rule audit_rule;
@@ -466,7 +470,7 @@ static inline bool fanotify_event_has_access_range(struct fanotify_event *event)
 	if (!(event->mask & FANOTIFY_PRE_CONTENT_EVENTS))
 		return false;
 
-	return FANOTIFY_PERM(event)->ppos;
+	return FANOTIFY_PERM(event)->pos != FANOTIFY_NO_RANGE;
 }
 
 static inline struct fanotify_event *FANOTIFY_E(struct fsnotify_event *fse)

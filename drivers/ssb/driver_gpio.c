@@ -15,7 +15,13 @@
 #include <linux/interrupt.h>
 #include <linux/irqdomain.h>
 #include <linux/export.h>
+#include <linux/property.h>
 #include <linux/ssb/ssb.h>
+
+const struct software_node ssb_gpio_swnode = {
+	.name = "ssb-gpio",
+};
+EXPORT_SYMBOL_GPL(ssb_gpio_swnode);
 
 
 /**************************************************
@@ -45,12 +51,14 @@ static int ssb_gpio_chipco_get_value(struct gpio_chip *chip, unsigned int gpio)
 	return !!ssb_chipco_gpio_in(&bus->chipco, 1 << gpio);
 }
 
-static void ssb_gpio_chipco_set_value(struct gpio_chip *chip, unsigned int gpio,
-				      int value)
+static int ssb_gpio_chipco_set_value(struct gpio_chip *chip, unsigned int gpio,
+				     int value)
 {
 	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_chipco_gpio_out(&bus->chipco, 1 << gpio, value ? 1 << gpio : 0);
+
+	return 0;
 }
 
 static int ssb_gpio_chipco_direction_input(struct gpio_chip *chip,
@@ -148,8 +156,8 @@ static int ssb_gpio_irq_chipco_domain_init(struct ssb_bus *bus)
 	if (bus->bustype != SSB_BUSTYPE_SSB)
 		return 0;
 
-	bus->irq_domain = irq_domain_add_linear(NULL, chip->ngpio,
-						&irq_domain_simple_ops, chipco);
+	bus->irq_domain = irq_domain_create_linear(NULL, chip->ngpio, &irq_domain_simple_ops,
+						   chipco);
 	if (!bus->irq_domain) {
 		err = -ENODEV;
 		goto err_irq_domain;
@@ -230,6 +238,8 @@ static int ssb_gpio_chipco_init(struct ssb_bus *bus)
 	chip->to_irq		= ssb_gpio_to_irq;
 #endif
 	chip->ngpio		= 16;
+	if (bus->bustype == SSB_BUSTYPE_SSB)
+		chip->fwnode	= software_node_fwnode(&ssb_gpio_swnode);
 	/* There is just one SoC in one device and its GPIO addresses should be
 	 * deterministic to address them more easily. The other buses could get
 	 * a random base number.
@@ -265,12 +275,14 @@ static int ssb_gpio_extif_get_value(struct gpio_chip *chip, unsigned int gpio)
 	return !!ssb_extif_gpio_in(&bus->extif, 1 << gpio);
 }
 
-static void ssb_gpio_extif_set_value(struct gpio_chip *chip, unsigned int gpio,
-				     int value)
+static int ssb_gpio_extif_set_value(struct gpio_chip *chip, unsigned int gpio,
+				    int value)
 {
 	struct ssb_bus *bus = gpiochip_get_data(chip);
 
 	ssb_extif_gpio_out(&bus->extif, 1 << gpio, value ? 1 << gpio : 0);
+
+	return 0;
 }
 
 static int ssb_gpio_extif_direction_input(struct gpio_chip *chip,
@@ -347,8 +359,8 @@ static int ssb_gpio_irq_extif_domain_init(struct ssb_bus *bus)
 	if (bus->bustype != SSB_BUSTYPE_SSB)
 		return 0;
 
-	bus->irq_domain = irq_domain_add_linear(NULL, chip->ngpio,
-						&irq_domain_simple_ops, extif);
+	bus->irq_domain = irq_domain_create_linear(NULL, chip->ngpio, &irq_domain_simple_ops,
+						   extif);
 	if (!bus->irq_domain) {
 		err = -ENODEV;
 		goto err_irq_domain;
@@ -429,10 +441,12 @@ static int ssb_gpio_extif_init(struct ssb_bus *bus)
 	 * deterministic to address them more easily. The other buses could get
 	 * a random base number.
 	 */
-	if (bus->bustype == SSB_BUSTYPE_SSB)
-		chip->base		= 0;
-	else
-		chip->base		= -1;
+	if (bus->bustype == SSB_BUSTYPE_SSB) {
+		chip->base	= 0;
+		chip->fwnode	= software_node_fwnode(&ssb_gpio_swnode);
+	} else {
+		chip->base	= -1;
+	}
 
 	err = ssb_gpio_irq_extif_domain_init(bus);
 	if (err)
@@ -460,11 +474,33 @@ static int ssb_gpio_extif_init(struct ssb_bus *bus)
 
 int ssb_gpio_init(struct ssb_bus *bus)
 {
+	int err = 0;
+
+	/*
+	 * Register software node only for the host SoC bus. There is only
+	 * one SoC instance in the system, so there are no concerns with
+	 * registration conflicts.
+	 */
+	if (bus->bustype == SSB_BUSTYPE_SSB) {
+		err = software_node_register(&ssb_gpio_swnode);
+		if (err)
+			return err;
+	}
+
 	if (ssb_chipco_available(&bus->chipco))
-		return ssb_gpio_chipco_init(bus);
+		err = ssb_gpio_chipco_init(bus);
 	else if (ssb_extif_available(&bus->extif))
-		return ssb_gpio_extif_init(bus);
-	return -1;
+		err = ssb_gpio_extif_init(bus);
+	else
+		err = -ENODEV;
+
+	if (err) {
+		if (bus->bustype == SSB_BUSTYPE_SSB)
+			software_node_unregister(&ssb_gpio_swnode);
+		return err;
+	}
+
+	return 0;
 }
 
 int ssb_gpio_unregister(struct ssb_bus *bus)
@@ -472,6 +508,8 @@ int ssb_gpio_unregister(struct ssb_bus *bus)
 	if (ssb_chipco_available(&bus->chipco) ||
 	    ssb_extif_available(&bus->extif)) {
 		gpiochip_remove(&bus->gpio);
+		if (bus->bustype == SSB_BUSTYPE_SSB)
+			software_node_unregister(&ssb_gpio_swnode);
 		return 0;
 	}
 	return -1;

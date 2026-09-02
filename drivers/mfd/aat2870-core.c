@@ -13,7 +13,7 @@
 #include <linux/uaccess.h>
 #include <linux/i2c.h>
 #include <linux/delay.h>
-#include <linux/gpio.h>
+#include <linux/gpio/legacy.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/aat2870.h>
 #include <linux/regulator/machine.h>
@@ -320,9 +320,7 @@ static const struct file_operations aat2870_reg_fops = {
 
 static void aat2870_init_debugfs(struct aat2870_data *aat2870)
 {
-	aat2870->dentry_root = debugfs_create_dir("aat2870", NULL);
-
-	debugfs_create_file("regs", 0644, aat2870->dentry_root, aat2870,
+	debugfs_create_file("regs", 0644, aat2870->client->debugfs, aat2870,
 			    &aat2870_reg_fops);
 }
 

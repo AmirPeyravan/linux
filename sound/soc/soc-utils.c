@@ -36,6 +36,7 @@ int snd_soc_ret(const struct device *dev, int ret, const char *fmt, ...)
 		vaf.va = &args;
 
 		dev_err(dev, "ASoC error (%d): %pV", ret, &vaf);
+		va_end(args);
 	}
 
 	return ret;
@@ -182,13 +183,6 @@ static const struct snd_soc_component_driver dummy_codec = {
 			SNDRV_PCM_FMTBIT_U32_LE | \
 			SNDRV_PCM_FMTBIT_IEC958_SUBFRAME_LE)
 
-/*
- * Select these from Sound Card Manually
- *	SND_SOC_POSSIBLE_DAIFMT_CBP_CFP
- *	SND_SOC_POSSIBLE_DAIFMT_CBP_CFC
- *	SND_SOC_POSSIBLE_DAIFMT_CBC_CFP
- *	SND_SOC_POSSIBLE_DAIFMT_CBC_CFC
- */
 static const u64 dummy_dai_formats =
 	SND_SOC_POSSIBLE_DAIFMT_I2S	|
 	SND_SOC_POSSIBLE_DAIFMT_RIGHT_J	|
@@ -261,6 +255,19 @@ struct snd_soc_dai_link_component snd_soc_dummy_dlc = {
 	.name		= "snd-soc-dummy",
 };
 EXPORT_SYMBOL_GPL(snd_soc_dummy_dlc);
+
+int snd_soc_dlc_is_dummy(struct snd_soc_dai_link_component *dlc)
+{
+	if (dlc == &snd_soc_dummy_dlc)
+		return true;
+
+	if ((dlc->name     && strcmp(dlc->name,     snd_soc_dummy_dlc.name)     == 0) ||
+	    (dlc->dai_name && strcmp(dlc->dai_name, snd_soc_dummy_dlc.dai_name) == 0))
+		return true;
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(snd_soc_dlc_is_dummy);
 
 static int snd_soc_dummy_probe(struct faux_device *fdev)
 {

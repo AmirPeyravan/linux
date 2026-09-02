@@ -13,6 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/kfifo.h>
+#include <linux/overflow.h>
 #include <linux/slab.h>
 #include <trace/events/host1x.h>
 
@@ -247,8 +248,6 @@ static int host1x_cdma_wait_pushbuffer_space(struct host1x *host1x,
 		trace_host1x_wait_cdma(dev_name(cdma_to_channel(cdma)->dev),
 				       CDMA_EVENT_PUSH_BUFFER_SPACE);
 
-		host1x_hw_cdma_flush(host1x, cdma);
-
 		/* If somebody has managed to already start waiting, yield */
 		if (cdma->event != CDMA_EVENT_NONE) {
 			mutex_unlock(&cdma->lock);
@@ -421,7 +420,7 @@ syncpt_incr:
 		/* won't need a timeout when replayed */
 		job->timeout = 0;
 
-		syncpt_incrs = job->syncpt_end - syncpt_val;
+		syncpt_incrs = wrapping_sub(u32, job->syncpt_end, syncpt_val);
 		dev_dbg(dev, "%s: CPU incr (%d)\n", __func__, syncpt_incrs);
 
 		host1x_job_dump(dev, job);
@@ -591,7 +590,6 @@ int host1x_cdma_begin(struct host1x_cdma *cdma, struct host1x_job *job)
  */
 void host1x_cdma_push(struct host1x_cdma *cdma, u32 op1, u32 op2)
 {
-	struct host1x *host1x = cdma_to_host1x(cdma);
 	struct push_buffer *pb = &cdma->push_buffer;
 	u32 slots_free = cdma->slots_free;
 
@@ -599,11 +597,9 @@ void host1x_cdma_push(struct host1x_cdma *cdma, u32 op1, u32 op2)
 		trace_host1x_cdma_push(dev_name(cdma_to_channel(cdma)->dev),
 				       op1, op2);
 
-	if (slots_free == 0) {
-		host1x_hw_cdma_flush(host1x, cdma);
+	if (slots_free == 0)
 		slots_free = host1x_cdma_wait_locked(cdma,
 						CDMA_EVENT_PUSH_BUFFER_SPACE);
-	}
 
 	cdma->slots_free = slots_free - 1;
 	cdma->slots_used++;

@@ -100,7 +100,7 @@ static const struct irq_domain_ops loongarch_cpu_intc_irq_domain_ops = {
 static int __init cpuintc_of_init(struct device_node *of_node,
 				struct device_node *parent)
 {
-	cpuintc_handle = of_node_to_fwnode(of_node);
+	cpuintc_handle = of_fwnode_handle(of_node);
 
 	irq_domain = irq_domain_create_linear(cpuintc_handle, EXCCODE_INT_NUM,
 				&loongarch_cpu_intc_irq_domain_ops, NULL);
@@ -168,7 +168,7 @@ static int __init cpuintc_acpi_init(union acpi_subtable_headers *header,
 		panic("Failed to add irqdomain for LoongArch CPU");
 
 	set_handle_irq(&handle_cpu_irq);
-	acpi_set_irq_model(ACPI_IRQ_MODEL_LPIC, lpic_get_gsi_domain_id);
+	acpi_set_irq_model(ACPI_IRQ_MODEL_LPIC, lpic_get_gsi_domain_id, NULL);
 	acpi_set_gsi_to_irq_fallback(lpic_gsi_to_irq);
 	ret = acpi_cascade_irqdomain_init();
 

@@ -18,7 +18,6 @@ extern void x86_virt_spec_ctrl(u64 guest_virt_spec_ctrl, bool guest);
 
 /**
  * x86_spec_ctrl_set_guest - Set speculation control registers for the guest
- * @guest_spec_ctrl:		The guest content of MSR_SPEC_CTRL
  * @guest_virt_spec_ctrl:	The guest controlled bits of MSR_VIRT_SPEC_CTRL
  *				(may get translated to MSR_AMD64_LS_CFG bits)
  *
@@ -32,7 +31,6 @@ void x86_spec_ctrl_set_guest(u64 guest_virt_spec_ctrl)
 
 /**
  * x86_spec_ctrl_restore_host - Restore host speculation control registers
- * @guest_spec_ctrl:		The guest content of MSR_SPEC_CTRL
  * @guest_virt_spec_ctrl:	The guest controlled bits of MSR_VIRT_SPEC_CTRL
  *				(may get translated to MSR_AMD64_LS_CFG bits)
  *
@@ -84,7 +82,7 @@ static inline u64 ssbd_tif_to_amd_ls_cfg(u64 tifn)
 static __always_inline void __update_spec_ctrl(u64 val)
 {
 	__this_cpu_write(x86_spec_ctrl_current, val);
-	native_wrmsrl(MSR_IA32_SPEC_CTRL, val);
+	native_wrmsrq(MSR_IA32_SPEC_CTRL, val);
 }
 
 #ifdef CONFIG_SMP

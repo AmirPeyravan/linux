@@ -233,6 +233,22 @@ struct ib_uverbs_ex_query_device {
 	__u32 reserved;
 };
 
+enum ib_uverbs_odp_general_cap_bits {
+	IB_UVERBS_ODP_SUPPORT          = 1 << 0,
+	IB_UVERBS_ODP_SUPPORT_IMPLICIT = 1 << 1,
+};
+
+enum ib_uverbs_odp_transport_cap_bits {
+	IB_UVERBS_ODP_SUPPORT_SEND     = 1 << 0,
+	IB_UVERBS_ODP_SUPPORT_RECV     = 1 << 1,
+	IB_UVERBS_ODP_SUPPORT_WRITE    = 1 << 2,
+	IB_UVERBS_ODP_SUPPORT_READ     = 1 << 3,
+	IB_UVERBS_ODP_SUPPORT_ATOMIC   = 1 << 4,
+	IB_UVERBS_ODP_SUPPORT_SRQ_RECV = 1 << 5,
+	IB_UVERBS_ODP_SUPPORT_FLUSH    = 1 << 6,
+	IB_UVERBS_ODP_SUPPORT_ATOMIC_WRITE     = 1 << 7,
+};
+
 struct ib_uverbs_odp_caps {
 	__aligned_u64 general_caps;
 	struct {
@@ -1352,6 +1368,8 @@ enum ib_uverbs_device_cap_flags {
 	IB_UVERBS_DEVICE_FLUSH_PERSISTENT = 1ULL << 39,
 	/* Atomic write attributes */
 	IB_UVERBS_DEVICE_ATOMIC_WRITE = 1ULL << 40,
+	/* CoCo guest with DMA bounce buffering required */
+	IB_UVERBS_DEVICE_CC_DMA_BOUNCE = 1ULL << 41,
 };
 
 enum ib_uverbs_raw_packet_caps {
@@ -1359,6 +1377,39 @@ enum ib_uverbs_raw_packet_caps {
 	IB_UVERBS_RAW_PACKET_CAP_SCATTER_FCS = 1 << 1,
 	IB_UVERBS_RAW_PACKET_CAP_IP_CSUM = 1 << 2,
 	IB_UVERBS_RAW_PACKET_CAP_DELAY_DROP = 1 << 3,
+};
+
+/*
+ * struct ib_uverbs_clock_info - timecounter state shared with userspace
+ *
+ * Drivers that use a software timecounter over a free-running hardware
+ * cycle counter can map this page read-only into userspace, allowing
+ * conversion of hardware timestamps to system time without a syscall.
+ *
+ * Synchronization uses a sequence counter (@sign): the kernel sets bit 0
+ * before updating, then advances by 2 after. Userspace must retry the read
+ * if @sign is odd or changed during the read.
+ *
+ * @sign:            Sequence counter (bit 0 = update in progress)
+ * @resv:            Reserved
+ * @nsec:            Nanoseconds at last update
+ * @cycles:          Cycle counter value at last update
+ * @frac:            Fractional nanoseconds at last update
+ * @mult:            Cycle-to-nanosecond multiplier
+ * @shift:           Cycle-to-nanosecond shift
+ * @mask:            Cycle counter bitmask
+ * @overflow_period: Max interval (nsec) between reads before counter wraps
+ */
+struct ib_uverbs_clock_info {
+	__u32 sign;
+	__u32 resv;
+	__aligned_u64 nsec;
+	__aligned_u64 cycles;
+	__aligned_u64 frac;
+	__u32 mult;
+	__u32 shift;
+	__aligned_u64 mask;
+	__aligned_u64 overflow_period;
 };
 
 #endif /* IB_USER_VERBS_H */

@@ -32,6 +32,7 @@
 
 #define MEMORY_TYPE_MULTIPLIER_CZ 4
 #define MEMORY_TYPE_HBM 2
+#define MAX_MCACHES 8
 
 
 #define IS_PIPE_SYNCD_VALID(pipe) ((((pipe)->pipe_idx_syncd) & 0x80)?1:0)
@@ -44,9 +45,11 @@ enum dce_version resource_parse_asic_id(
 struct resource_caps {
 	int num_timing_generator;
 	int num_opp;
+	int num_dpp;
 	int num_video_plane;
 	int num_audio;
 	int num_stream_encoder;
+	int num_analog_stream_encoder;
 	int num_pll;
 	int num_dwb;
 	int num_ddc;
@@ -54,15 +57,26 @@ struct resource_caps {
 	int num_dsc;
 	unsigned int num_dig_link_enc; // Total number of DIGs (digital encoders) in DIO (Display Input/Output).
 	unsigned int num_usb4_dpia; // Total number of USB4 DPIA (DisplayPort Input Adapters).
+	int num_hpo_frl;
 	int num_hpo_dp_stream_encoder;
 	int num_hpo_dp_link_encoder;
 	int num_mpc_3dlut;
+	int num_mpc;
+	int num_rmcm;
+	int num_aux;
 };
 
 struct resource_straps {
 	uint32_t hdmi_disable;
 	uint32_t dc_pinstraps_audio;
 	uint32_t audio_stream_number;
+};
+
+struct dc_mcache_allocations {
+	int global_mcache_ids_plane0[MAX_MCACHES + 1];
+	int global_mcache_ids_plane1[MAX_MCACHES + 1];
+	int global_mcache_ids_mall_plane0[MAX_MCACHES + 1];
+	int global_mcache_ids_mall_plane1[MAX_MCACHES + 1];
 };
 
 struct resource_create_funcs {
@@ -75,6 +89,10 @@ struct resource_create_funcs {
 	struct stream_encoder *(*create_stream_encoder)(
 			enum engine_id eng_id, struct dc_context *ctx);
 
+	struct hpo_frl_stream_encoder *(*create_hpo_frl_stream_encoder)(
+			enum engine_id eng_id, struct dc_context *ctx);
+	struct hpo_frl_link_encoder *(*create_hpo_frl_link_encoder)(
+			enum engine_id eng_id, struct dc_context *ctx);
 	struct hpo_dp_stream_encoder *(*create_hpo_dp_stream_encoder)(
 			enum engine_id eng_id, struct dc_context *ctx);
 	struct hpo_dp_link_encoder *(*create_hpo_dp_link_encoder)(
@@ -104,6 +122,8 @@ enum dc_status resource_map_pool_resources(
 void resource_build_test_pattern_params(
 		struct resource_context *res_ctx,
 		struct pipe_ctx *pipe_ctx);
+
+enum upsp_mode resource_is_upsp_required(enum surface_pixel_format format);
 
 bool resource_build_scaling_params(struct pipe_ctx *pipe_ctx);
 
@@ -559,11 +579,14 @@ struct pipe_ctx *resource_find_free_secondary_pipe_legacy(
 		const struct pipe_ctx *primary_pipe);
 
 bool resource_validate_attach_surfaces(
-		const struct dc_validation_set set[],
-		int set_count,
+		const struct dc_validation_set *set,
 		const struct dc_state *old_context,
 		struct dc_state *context,
 		const struct resource_pool *pool);
+
+enum dc_status resource_validate_probe_set(struct dc *dc,
+		const struct dc_probe_state *probes,
+		uint8_t probe_count);
 
 enum dc_status resource_map_clock_resources(
 		const struct dc *dc,
@@ -593,6 +616,8 @@ unsigned int resource_pixel_format_to_bpp(enum surface_pixel_format format);
 bool get_temp_dp_link_res(struct dc_link *link,
 		struct link_resource *link_res,
 		struct dc_link_settings *link_settings);
+bool get_temp_frl_link_res(struct dc_link *link,
+		struct link_resource *link_res);
 
 void reset_syncd_pipes_from_disabled_pipes(struct dc *dc,
 	struct dc_state *context);
@@ -627,8 +652,6 @@ bool dc_resource_acquire_secondary_pipe_for_mpc_odm_legacy(
 enum dc_status update_dp_encoder_resources_for_test_harness(const struct dc *dc,
 		struct dc_state *context,
 		struct pipe_ctx *pipe_ctx);
-
-bool check_subvp_sw_cursor_fallback_req(const struct dc *dc, struct dc_stream_state *stream);
 
 /* Get hw programming parameters container from pipe context
  * @pipe_ctx: pipe context

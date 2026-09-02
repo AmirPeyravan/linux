@@ -15,7 +15,7 @@ static void __rdmsr_on_cpu(void *info)
 	else
 		reg = &rv->reg;
 
-	rdmsr(rv->msr_no, reg->l, reg->h);
+	rdmsrq(rv->msr_no, reg->q);
 }
 
 static void __wrmsr_on_cpu(void *info)
@@ -28,26 +28,10 @@ static void __wrmsr_on_cpu(void *info)
 	else
 		reg = &rv->reg;
 
-	wrmsr(rv->msr_no, reg->l, reg->h);
+	wrmsrq(rv->msr_no, reg->q);
 }
 
-int rdmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h)
-{
-	int err;
-	struct msr_info rv;
-
-	memset(&rv, 0, sizeof(rv));
-
-	rv.msr_no = msr_no;
-	err = smp_call_function_single(cpu, __rdmsr_on_cpu, &rv, 1);
-	*l = rv.reg.l;
-	*h = rv.reg.h;
-
-	return err;
-}
-EXPORT_SYMBOL(rdmsr_on_cpu);
-
-int rdmsrl_on_cpu(unsigned int cpu, u32 msr_no, u64 *q)
+int rdmsrq_on_cpu(unsigned int cpu, u32 msr_no, u64 *q)
 {
 	int err;
 	struct msr_info rv;
@@ -60,25 +44,9 @@ int rdmsrl_on_cpu(unsigned int cpu, u32 msr_no, u64 *q)
 
 	return err;
 }
-EXPORT_SYMBOL(rdmsrl_on_cpu);
+EXPORT_SYMBOL(rdmsrq_on_cpu);
 
-int wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
-{
-	int err;
-	struct msr_info rv;
-
-	memset(&rv, 0, sizeof(rv));
-
-	rv.msr_no = msr_no;
-	rv.reg.l = l;
-	rv.reg.h = h;
-	err = smp_call_function_single(cpu, __wrmsr_on_cpu, &rv, 1);
-
-	return err;
-}
-EXPORT_SYMBOL(wrmsr_on_cpu);
-
-int wrmsrl_on_cpu(unsigned int cpu, u32 msr_no, u64 q)
+int wrmsrq_on_cpu(unsigned int cpu, u32 msr_no, u64 q)
 {
 	int err;
 	struct msr_info rv;
@@ -92,7 +60,7 @@ int wrmsrl_on_cpu(unsigned int cpu, u32 msr_no, u64 q)
 
 	return err;
 }
-EXPORT_SYMBOL(wrmsrl_on_cpu);
+EXPORT_SYMBOL(wrmsrq_on_cpu);
 
 static void __rwmsr_on_cpus(const struct cpumask *mask, u32 msr_no,
 			    struct msr __percpu *msrs,
@@ -153,7 +121,7 @@ static void __rdmsr_safe_on_cpu(void *info)
 {
 	struct msr_info_completion *rv = info;
 
-	rv->msr.err = rdmsr_safe(rv->msr.msr_no, &rv->msr.reg.l, &rv->msr.reg.h);
+	rv->msr.err = rdmsrq_safe(rv->msr.msr_no, &rv->msr.reg.q);
 	complete(&rv->done);
 }
 
@@ -161,10 +129,26 @@ static void __wrmsr_safe_on_cpu(void *info)
 {
 	struct msr_info *rv = info;
 
-	rv->err = wrmsr_safe(rv->msr_no, rv->reg.l, rv->reg.h);
+	rv->err = wrmsrq_safe(rv->msr_no, rv->reg.q);
 }
 
-int rdmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h)
+int wrmsrq_safe_on_cpu(unsigned int cpu, u32 msr_no, u64 q)
+{
+	int err;
+	struct msr_info rv;
+
+	memset(&rv, 0, sizeof(rv));
+
+	rv.msr_no = msr_no;
+	rv.reg.q = q;
+
+	err = smp_call_function_single(cpu, __wrmsr_safe_on_cpu, &rv, 1);
+
+	return err ? err : rv.err;
+}
+EXPORT_SYMBOL(wrmsrq_safe_on_cpu);
+
+int rdmsrq_safe_on_cpu(unsigned int cpu, u32 msr_no, u64 *q)
 {
 	struct msr_info_completion rv;
 	call_single_data_t csd;
@@ -181,56 +165,11 @@ int rdmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h)
 		wait_for_completion(&rv.done);
 		err = rv.msr.err;
 	}
-	*l = rv.msr.reg.l;
-	*h = rv.msr.reg.h;
+	*q = rv.msr.reg.q;
 
 	return err;
 }
-EXPORT_SYMBOL(rdmsr_safe_on_cpu);
-
-int wrmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
-{
-	int err;
-	struct msr_info rv;
-
-	memset(&rv, 0, sizeof(rv));
-
-	rv.msr_no = msr_no;
-	rv.reg.l = l;
-	rv.reg.h = h;
-	err = smp_call_function_single(cpu, __wrmsr_safe_on_cpu, &rv, 1);
-
-	return err ? err : rv.err;
-}
-EXPORT_SYMBOL(wrmsr_safe_on_cpu);
-
-int wrmsrl_safe_on_cpu(unsigned int cpu, u32 msr_no, u64 q)
-{
-	int err;
-	struct msr_info rv;
-
-	memset(&rv, 0, sizeof(rv));
-
-	rv.msr_no = msr_no;
-	rv.reg.q = q;
-
-	err = smp_call_function_single(cpu, __wrmsr_safe_on_cpu, &rv, 1);
-
-	return err ? err : rv.err;
-}
-EXPORT_SYMBOL(wrmsrl_safe_on_cpu);
-
-int rdmsrl_safe_on_cpu(unsigned int cpu, u32 msr_no, u64 *q)
-{
-	u32 low, high;
-	int err;
-
-	err = rdmsr_safe_on_cpu(cpu, msr_no, &low, &high);
-	*q = (u64)high << 32 | low;
-
-	return err;
-}
-EXPORT_SYMBOL(rdmsrl_safe_on_cpu);
+EXPORT_SYMBOL(rdmsrq_safe_on_cpu);
 
 /*
  * These variants are significantly slower, but allows control over

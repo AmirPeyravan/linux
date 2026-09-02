@@ -67,6 +67,8 @@ static int xgpu_nv_mailbox_rcv_msg(struct amdgpu_device *adev,
 	reg = RREG32_NO_KIQ(mmMAILBOX_MSGBUF_RCV_DW0);
 	if (reg == IDH_FAIL)
 		r = -EINVAL;
+	if (reg == IDH_UNRECOV_ERR_NOTIFICATION)
+		r = -ENODEV;
 	else if (reg != event)
 		return -ENOENT;
 
@@ -94,7 +96,9 @@ static int xgpu_nv_poll_ack(struct amdgpu_device *adev)
 		timeout -= 5;
 	} while (timeout > 1);
 
-	dev_err(adev->dev, "Doesn't get TRN_MSG_ACK from pf in %d msec \n", NV_MAILBOX_POLL_ACK_TIMEDOUT);
+	dev_err(adev->dev,
+		"Doesn't get TRN_MSG_ACK from pf in %d msec\n",
+		NV_MAILBOX_POLL_ACK_TIMEDOUT);
 
 	return -ETIME;
 }
@@ -103,6 +107,7 @@ static int xgpu_nv_poll_msg(struct amdgpu_device *adev, enum idh_event event)
 {
 	int r;
 	uint64_t timeout, now;
+	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
 
 	now = (uint64_t)ktime_to_ms(ktime_get());
 	timeout = now + NV_MAILBOX_POLL_MSG_TIMEDOUT;
@@ -110,8 +115,16 @@ static int xgpu_nv_poll_msg(struct amdgpu_device *adev, enum idh_event event)
 	do {
 		r = xgpu_nv_mailbox_rcv_msg(adev, event);
 		if (!r) {
-			dev_dbg(adev->dev, "rcv_msg 0x%x after %llu ms\n", event, NV_MAILBOX_POLL_MSG_TIMEDOUT - timeout + now);
+			dev_dbg(adev->dev, "rcv_msg 0x%x after %llu ms\n",
+					event, NV_MAILBOX_POLL_MSG_TIMEDOUT - timeout + now);
 			return 0;
+		} else if (r == -ENODEV) {
+			if (!amdgpu_ras_is_rma(adev)) {
+				ras->is_rma = true;
+				dev_err(adev->dev, "VF is in an unrecoverable state. "
+						"Runtime Services are halted.\n");
+			}
+			return r;
 		}
 
 		msleep(10);
@@ -162,10 +175,18 @@ static void xgpu_nv_mailbox_trans_msg (struct amdgpu_device *adev,
 static int xgpu_nv_send_access_requests_with_param(struct amdgpu_device *adev,
 			enum idh_request req, u32 data1, u32 data2, u32 data3)
 {
-	int r, retry = 1;
+	struct amdgpu_virt *virt = &adev->virt;
+	int r = 0, retry = 1;
 	enum idh_event event = -1;
 
+	mutex_lock(&virt->access_req_mutex);
 send_request:
+
+	if (amdgpu_ras_is_rma(adev)) {
+		r = -ENODEV;
+		goto out;
+	}
+
 	xgpu_nv_mailbox_trans_msg(adev, req, data1, data2, data3);
 
 	switch (req) {
@@ -187,6 +208,15 @@ send_request:
 	case IDH_REQ_RAS_CPER_DUMP:
 		event = IDH_RAS_CPER_DUMP_READY;
 		break;
+	case IDH_REQ_RAS_CHK_CRITI:
+		event = IDH_REQ_RAS_CHK_CRITI_READY;
+		break;
+	case IDH_REQ_RAS_REMOTE_CMD:
+		event = IDH_REQ_RAS_REMOTE_CMD_READY;
+		break;
+	case IDH_REQ_PTL_UPDATE:
+		event = IDH_PTL_UPDATE_READY;
+		break;
 	default:
 		break;
 	}
@@ -199,17 +229,25 @@ send_request:
 
 			if (req != IDH_REQ_GPU_INIT_DATA) {
 				dev_err(adev->dev, "Doesn't get msg:%d from pf, error=%d\n", event, r);
-				return r;
+				goto out;
 			} else /* host doesn't support REQ_GPU_INIT_DATA handshake */
 				adev->virt.req_init_data_ver = 0;
 		} else {
 			if (req == IDH_REQ_GPU_INIT_DATA) {
-				adev->virt.req_init_data_ver =
-					RREG32_NO_KIQ(mmMAILBOX_MSGBUF_RCV_DW1);
-
-				/* assume V1 in case host doesn't set version number */
-				if (adev->virt.req_init_data_ver < 1)
-					adev->virt.req_init_data_ver = 1;
+				switch (RREG32_NO_KIQ(mmMAILBOX_MSGBUF_RCV_DW1)) {
+				case GPU_CRIT_REGION_V2:
+					adev->virt.req_init_data_ver = GPU_CRIT_REGION_V2;
+					adev->virt.init_data_header.offset =
+						RREG32_NO_KIQ(mmMAILBOX_MSGBUF_RCV_DW2);
+					adev->virt.init_data_header.size_kb =
+						RREG32_NO_KIQ(mmMAILBOX_MSGBUF_RCV_DW3);
+					break;
+				default:
+					adev->virt.req_init_data_ver = GPU_CRIT_REGION_V1;
+					adev->virt.init_data_header.offset = -1;
+					adev->virt.init_data_header.size_kb = 0;
+					break;
+				}
 			}
 		}
 
@@ -218,9 +256,29 @@ send_request:
 			adev->virt.fw_reserve.checksum_key =
 				RREG32_NO_KIQ(mmMAILBOX_MSGBUF_RCV_DW2);
 		}
+
+		/* Retrieve PTL response from mailbox */
+		if (req == IDH_REQ_PTL_UPDATE) {
+			u32 dw1 = RREG32_NO_KIQ(mmMAILBOX_MSGBUF_RCV_DW1);
+			u32 dw2 = RREG32_NO_KIQ(mmMAILBOX_MSGBUF_RCV_DW2);
+			u32 status = AMD_SRIOV_PTL_UNPACK_STATUS(dw1);
+
+			if (status == AMD_SRIOV_RESP_UNSUPPORTED) {
+				r = -EOPNOTSUPP;
+			} else if (status == AMD_SRIOV_RESP_FAIL) {
+				r = -EIO;
+			} else {
+				adev->virt.ptl_state = AMD_SRIOV_PTL_UNPACK_STATE(dw1);
+				adev->virt.ptl_pref_format1 = AMD_SRIOV_PTL_UNPACK_FMT1(dw2);
+				adev->virt.ptl_pref_format2 = AMD_SRIOV_PTL_UNPACK_FMT2(dw2);
+			}
+		}
 	}
 
-	return 0;
+out:
+	mutex_unlock(&virt->access_req_mutex);
+
+	return r;
 }
 
 static int xgpu_nv_send_access_requests(struct amdgpu_device *adev,
@@ -267,7 +325,8 @@ static int xgpu_nv_release_full_gpu_access(struct amdgpu_device *adev,
 
 static int xgpu_nv_request_init_data(struct amdgpu_device *adev)
 {
-	return xgpu_nv_send_access_requests(adev, IDH_REQ_GPU_INIT_DATA);
+	return xgpu_nv_send_access_requests_with_param(adev, IDH_REQ_GPU_INIT_DATA,
+			0, GPU_CRIT_REGION_V2, 0);
 }
 
 static int xgpu_nv_mailbox_ack_irq(struct amdgpu_device *adev,
@@ -320,6 +379,7 @@ static void xgpu_nv_mailbox_flr_work(struct work_struct *work)
 {
 	struct amdgpu_virt *virt = container_of(work, struct amdgpu_virt, flr_work);
 	struct amdgpu_device *adev = container_of(virt, struct amdgpu_device, virt);
+	struct amdgpu_reset_context reset_context = { 0 };
 
 	amdgpu_virt_fini_data_exchange(adev);
 
@@ -330,8 +390,6 @@ static void xgpu_nv_mailbox_flr_work(struct work_struct *work)
 		adev->gfx_timeout == MAX_SCHEDULE_TIMEOUT ||
 		adev->compute_timeout == MAX_SCHEDULE_TIMEOUT ||
 		adev->video_timeout == MAX_SCHEDULE_TIMEOUT)) {
-		struct amdgpu_reset_context reset_context;
-		memset(&reset_context, 0, sizeof(reset_context));
 
 		reset_context.method = AMD_RESET_METHOD_NONE;
 		reset_context.reset_req_dev = adev;
@@ -339,6 +397,37 @@ static void xgpu_nv_mailbox_flr_work(struct work_struct *work)
 		set_bit(AMDGPU_HOST_FLR, &reset_context.flags);
 
 		amdgpu_device_gpu_recover(adev, NULL, &reset_context);
+	}
+}
+
+static void xgpu_nv_mailbox_req_bad_pages_work(struct work_struct *work)
+{
+	struct amdgpu_virt *virt = container_of(work, struct amdgpu_virt, req_bad_pages_work);
+	struct amdgpu_device *adev = container_of(virt, struct amdgpu_device, virt);
+
+	if (down_read_trylock(&adev->reset_domain->sem)) {
+		amdgpu_virt_fini_data_exchange(adev);
+		amdgpu_virt_request_bad_pages(adev);
+		up_read(&adev->reset_domain->sem);
+	}
+}
+
+/**
+ * xgpu_nv_mailbox_handle_bad_pages_work - Reinitialize the data exchange region to get fresh bad page information
+ * @work: pointer to the work_struct
+ *
+ * This work handler is triggered when bad pages are ready, and it reinitializes
+ * the data exchange region to retrieve updated bad page information from the host.
+ */
+static void xgpu_nv_mailbox_handle_bad_pages_work(struct work_struct *work)
+{
+	struct amdgpu_virt *virt = container_of(work, struct amdgpu_virt, handle_bad_pages_work);
+	struct amdgpu_device *adev = container_of(virt, struct amdgpu_device, virt);
+
+	if (down_read_trylock(&adev->reset_domain->sem)) {
+		amdgpu_virt_fini_data_exchange(adev);
+		amdgpu_virt_init_data_exchange(adev);
+		up_read(&adev->reset_domain->sem);
 	}
 }
 
@@ -364,8 +453,32 @@ static int xgpu_nv_mailbox_rcv_irq(struct amdgpu_device *adev,
 				   struct amdgpu_iv_entry *entry)
 {
 	enum idh_event event = xgpu_nv_mailbox_peek_msg(adev);
+	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
 
 	switch (event) {
+	case IDH_RAS_BAD_PAGES_READY:
+		xgpu_nv_mailbox_send_ack(adev);
+		if (amdgpu_sriov_runtime(adev))
+			schedule_work(&adev->virt.handle_bad_pages_work);
+		break;
+	case IDH_RAS_BAD_PAGES_NOTIFICATION:
+		xgpu_nv_mailbox_send_ack(adev);
+		if (amdgpu_sriov_runtime(adev))
+			schedule_work(&adev->virt.req_bad_pages_work);
+		break;
+	case IDH_UNRECOV_ERR_NOTIFICATION:
+		xgpu_nv_mailbox_send_ack(adev);
+		if (!amdgpu_ras_is_rma(adev)) {
+			ras->is_rma = true;
+			dev_err(adev->dev, "VF is in an unrecoverable state. Runtime Services are halted.\n");
+		}
+
+		if (amdgpu_sriov_runtime(adev))
+			WARN_ONCE(!amdgpu_reset_domain_schedule(adev->reset_domain,
+						&adev->virt.flr_work),
+					"Failed to queue work! at %s",
+					__func__);
+		break;
 	case IDH_FLR_NOTIFICATION:
 		if (amdgpu_sriov_runtime(adev))
 			WARN_ONCE(!amdgpu_reset_domain_schedule(adev->reset_domain,
@@ -436,6 +549,8 @@ int xgpu_nv_mailbox_get_irq(struct amdgpu_device *adev)
 	}
 
 	INIT_WORK(&adev->virt.flr_work, xgpu_nv_mailbox_flr_work);
+	INIT_WORK(&adev->virt.req_bad_pages_work, xgpu_nv_mailbox_req_bad_pages_work);
+	INIT_WORK(&adev->virt.handle_bad_pages_work, xgpu_nv_mailbox_handle_bad_pages_work);
 
 	return 0;
 }
@@ -480,6 +595,35 @@ static int xgpu_nv_req_ras_cper_dump(struct amdgpu_device *adev, u64 vf_rptr)
 		adev, IDH_REQ_RAS_CPER_DUMP, vf_rptr_hi, vf_rptr_lo, 0);
 }
 
+static int xgpu_nv_req_ras_bad_pages(struct amdgpu_device *adev)
+{
+	return xgpu_nv_send_access_requests(adev, IDH_REQ_RAS_BAD_PAGES);
+}
+
+static int xgpu_nv_check_vf_critical_region(struct amdgpu_device *adev, u64 addr)
+{
+	uint32_t addr_hi, addr_lo;
+
+	addr_hi = (uint32_t)(addr >> 32);
+	addr_lo = (uint32_t)(addr & 0xFFFFFFFF);
+	return xgpu_nv_send_access_requests_with_param(
+		adev, IDH_REQ_RAS_CHK_CRITI, addr_hi, addr_lo, 0);
+}
+
+static int xgpu_nv_req_remote_ras_cmd(struct amdgpu_device *adev,
+		u32 param1, u32 param2, u32 param3)
+{
+	return xgpu_nv_send_access_requests_with_param(
+		adev, IDH_REQ_RAS_REMOTE_CMD, param1, param2, param3);
+}
+
+static int xgpu_nv_req_ptl_update(struct amdgpu_device *adev,
+				  u32 req_code, u32 ptl_state, u32 fmt1, u32 fmt2)
+{
+	return xgpu_nv_send_access_requests_with_param(adev, IDH_REQ_PTL_UPDATE,
+			req_code, ptl_state, AMD_SRIOV_PTL_PACK_FORMATS(fmt1, fmt2));
+}
+
 const struct amdgpu_virt_ops xgpu_nv_virt_ops = {
 	.req_full_gpu	= xgpu_nv_request_full_gpu_access,
 	.rel_full_gpu	= xgpu_nv_release_full_gpu_access,
@@ -492,4 +636,8 @@ const struct amdgpu_virt_ops xgpu_nv_virt_ops = {
 	.rcvd_ras_intr = xgpu_nv_rcvd_ras_intr,
 	.req_ras_err_count = xgpu_nv_req_ras_err_count,
 	.req_ras_cper_dump = xgpu_nv_req_ras_cper_dump,
+	.req_bad_pages = xgpu_nv_req_ras_bad_pages,
+	.req_ras_chk_criti = xgpu_nv_check_vf_critical_region,
+	.req_remote_ras_cmd = xgpu_nv_req_remote_ras_cmd,
+	.req_ptl_update = xgpu_nv_req_ptl_update,
 };

@@ -45,7 +45,7 @@
 #define APPLETBDRM_BULK_MSG_TIMEOUT	1000
 
 #define drm_to_adev(_drm)		container_of(_drm, struct appletbdrm_device, drm)
-#define adev_to_udev(adev)		interface_to_usbdev(to_usb_interface(adev->dmadev))
+#define adev_to_udev(adev)		interface_to_usbdev(to_usb_interface((adev)->drm.dev))
 
 struct appletbdrm_msg_request_header {
 	__le16 unk_00;
@@ -123,8 +123,6 @@ struct appletbdrm_fb_request_response {
 } __packed;
 
 struct appletbdrm_device {
-	struct device *dmadev;
-
 	unsigned int in_ep;
 	unsigned int out_ep;
 
@@ -214,7 +212,7 @@ retry:
 	}
 
 	if (response->msg != expected_response) {
-		drm_err(drm, "Unexpected response from device (expected %p4cc found %p4cc)\n",
+		drm_err(drm, "Unexpected response from device (expected %p4cl found %p4cl)\n",
 			&expected_response, &response->msg);
 		return -EIO;
 	}
@@ -227,7 +225,7 @@ static int appletbdrm_send_msg(struct appletbdrm_device *adev, __le32 msg)
 	struct appletbdrm_msg_simple_request *request;
 	int ret;
 
-	request = kzalloc(sizeof(*request), GFP_KERNEL);
+	request = kzalloc_obj(*request);
 	if (!request)
 		return -ENOMEM;
 
@@ -262,7 +260,7 @@ static int appletbdrm_get_information(struct appletbdrm_device *adev)
 	__le32 pixel_format;
 	int ret;
 
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info)
 		return -ENOMEM;
 
@@ -288,7 +286,7 @@ static int appletbdrm_get_information(struct appletbdrm_device *adev)
 	}
 
 	if (pixel_format != APPLETBDRM_PIXEL_FORMAT) {
-		drm_err(drm, "Encountered unknown pixel format (%p4cc)\n", &pixel_format);
+		drm_err(drm, "Encountered unknown pixel format (%p4cl)\n", &pixel_format);
 		ret = -EINVAL;
 		goto free_info;
 	}
@@ -317,18 +315,49 @@ static const u32 appletbdrm_primary_plane_formats[] = {
 	DRM_FORMAT_XRGB8888, /* emulated */
 };
 
-static int appletbdrm_primary_plane_helper_atomic_check(struct drm_plane *plane,
-						   struct drm_atomic_state *state)
+static int appletbdrm_primary_plane_helper_begin_fb_access(struct drm_plane *plane,
+							   struct drm_plane_state *new_plane_state)
 {
-	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state, plane);
-	struct drm_plane_state *old_plane_state = drm_atomic_get_old_plane_state(state, plane);
-	struct drm_crtc *new_crtc = new_plane_state->crtc;
-	struct drm_crtc_state *new_crtc_state = NULL;
 	struct appletbdrm_plane_state *appletbdrm_state = to_appletbdrm_plane_state(new_plane_state);
+	size_t frames_size = 0;
 	struct drm_atomic_helper_damage_iter iter;
 	struct drm_rect damage;
-	size_t frames_size = 0;
 	size_t request_size;
+
+	drm_atomic_helper_damage_iter_init(&iter, plane->state, new_plane_state);
+	drm_atomic_for_each_plane_damage(&iter, &damage) {
+		frames_size += struct_size((struct appletbdrm_frame *)0, buf, rect_size(&damage));
+	}
+
+	if (!frames_size)
+		return 0;
+
+	request_size = ALIGN(sizeof(struct appletbdrm_fb_request) +
+		       frames_size +
+		       sizeof(struct appletbdrm_fb_request_footer), 16);
+
+	appletbdrm_state->request = kvzalloc(request_size, GFP_KERNEL);
+
+	if (!appletbdrm_state->request)
+		return -ENOMEM;
+
+	appletbdrm_state->response = kzalloc_obj(*appletbdrm_state->response);
+
+	if (!appletbdrm_state->response)
+		return -ENOMEM;
+
+	appletbdrm_state->request_size = request_size;
+	appletbdrm_state->frames_size = frames_size;
+
+	return drm_gem_begin_shadow_fb_access(plane, new_plane_state);
+}
+
+static int appletbdrm_primary_plane_helper_atomic_check(struct drm_plane *plane,
+							struct drm_atomic_commit *state)
+{
+	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc *new_crtc = new_plane_state->crtc;
+	struct drm_crtc_state *new_crtc_state = NULL;
 	int ret;
 
 	if (new_crtc)
@@ -342,31 +371,6 @@ static int appletbdrm_primary_plane_helper_atomic_check(struct drm_plane *plane,
 		return ret;
 	else if (!new_plane_state->visible)
 		return 0;
-
-	drm_atomic_helper_damage_iter_init(&iter, old_plane_state, new_plane_state);
-	drm_atomic_for_each_plane_damage(&iter, &damage) {
-		frames_size += struct_size((struct appletbdrm_frame *)0, buf, rect_size(&damage));
-	}
-
-	if (!frames_size)
-		return 0;
-
-	request_size = ALIGN(sizeof(struct appletbdrm_fb_request) +
-		       frames_size +
-		       sizeof(struct appletbdrm_fb_request_footer), 16);
-
-	appletbdrm_state->request = kzalloc(request_size, GFP_KERNEL);
-
-	if (!appletbdrm_state->request)
-		return -ENOMEM;
-
-	appletbdrm_state->response = kzalloc(sizeof(*appletbdrm_state->response), GFP_KERNEL);
-
-	if (!appletbdrm_state->response)
-		return -ENOMEM;
-
-	appletbdrm_state->request_size = request_size;
-	appletbdrm_state->frames_size = frames_size;
 
 	return 0;
 }
@@ -470,7 +474,7 @@ end_fb_cpu_access:
 }
 
 static void appletbdrm_primary_plane_helper_atomic_update(struct drm_plane *plane,
-						     struct drm_atomic_state *old_state)
+							  struct drm_atomic_commit *old_state)
 {
 	struct appletbdrm_device *adev = drm_to_adev(plane->dev);
 	struct drm_device *drm = plane->dev;
@@ -487,7 +491,7 @@ static void appletbdrm_primary_plane_helper_atomic_update(struct drm_plane *plan
 }
 
 static void appletbdrm_primary_plane_helper_atomic_disable(struct drm_plane *plane,
-							   struct drm_atomic_state *state)
+							   struct drm_atomic_commit *state)
 {
 	struct drm_device *dev = plane->dev;
 	struct appletbdrm_device *adev = drm_to_adev(dev);
@@ -507,7 +511,7 @@ static void appletbdrm_primary_plane_reset(struct drm_plane *plane)
 
 	WARN_ON(plane->state);
 
-	appletbdrm_state = kzalloc(sizeof(*appletbdrm_state), GFP_KERNEL);
+	appletbdrm_state = kzalloc_obj(*appletbdrm_state);
 	if (!appletbdrm_state)
 		return;
 
@@ -522,7 +526,7 @@ static struct drm_plane_state *appletbdrm_primary_plane_duplicate_state(struct d
 	if (WARN_ON(!plane->state))
 		return NULL;
 
-	appletbdrm_state = kzalloc(sizeof(*appletbdrm_state), GFP_KERNEL);
+	appletbdrm_state = kzalloc_obj(*appletbdrm_state);
 	if (!appletbdrm_state)
 		return NULL;
 
@@ -545,7 +549,7 @@ static void appletbdrm_primary_plane_destroy_state(struct drm_plane *plane,
 {
 	struct appletbdrm_plane_state *appletbdrm_state = to_appletbdrm_plane_state(state);
 
-	kfree(appletbdrm_state->request);
+	kvfree(appletbdrm_state->request);
 	kfree(appletbdrm_state->response);
 
 	__drm_gem_destroy_shadow_plane_state(&appletbdrm_state->base);
@@ -554,7 +558,8 @@ static void appletbdrm_primary_plane_destroy_state(struct drm_plane *plane,
 }
 
 static const struct drm_plane_helper_funcs appletbdrm_primary_plane_helper_funcs = {
-	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
+	.begin_fb_access = appletbdrm_primary_plane_helper_begin_fb_access,
+	.end_fb_access = drm_gem_end_shadow_fb_access,
 	.atomic_check = appletbdrm_primary_plane_helper_atomic_check,
 	.atomic_update = appletbdrm_primary_plane_helper_atomic_update,
 	.atomic_disable = appletbdrm_primary_plane_helper_atomic_disable,
@@ -612,22 +617,10 @@ static const struct drm_encoder_funcs appletbdrm_encoder_funcs = {
 	.destroy = drm_encoder_cleanup,
 };
 
-static struct drm_gem_object *appletbdrm_driver_gem_prime_import(struct drm_device *dev,
-								 struct dma_buf *dma_buf)
-{
-	struct appletbdrm_device *adev = drm_to_adev(dev);
-
-	if (!adev->dmadev)
-		return ERR_PTR(-ENODEV);
-
-	return drm_gem_prime_import_dev(dev, dma_buf, adev->dmadev);
-}
-
 DEFINE_DRM_GEM_FOPS(appletbdrm_drm_fops);
 
 static const struct drm_driver appletbdrm_drm_driver = {
 	DRM_GEM_SHMEM_DRIVER_OPS,
-	.gem_prime_import	= appletbdrm_driver_gem_prime_import,
 	.name			= "appletbdrm",
 	.desc			= "Apple Touch Bar DRM Driver",
 	.major			= 1,
@@ -747,6 +740,7 @@ static int appletbdrm_probe(struct usb_interface *intf,
 	struct device *dev = &intf->dev;
 	struct appletbdrm_device *adev;
 	struct drm_device *drm = NULL;
+	struct device *dma_dev;
 	int ret;
 
 	ret = usb_find_common_endpoints(intf->cur_altsetting, &bulk_in, &bulk_out, NULL, NULL);
@@ -761,11 +755,18 @@ static int appletbdrm_probe(struct usb_interface *intf,
 
 	adev->in_ep = bulk_in->bEndpointAddress;
 	adev->out_ep = bulk_out->bEndpointAddress;
-	adev->dmadev = dev;
 
 	drm = &adev->drm;
 
 	usb_set_intfdata(intf, adev);
+
+	dma_dev = usb_intf_get_dma_device(intf);
+	if (dma_dev) {
+		drm_dev_set_dma_dev(drm, dma_dev);
+		put_device(dma_dev);
+	} else {
+		drm_warn(drm, "buffer sharing not supported"); /* not an error */
+	}
 
 	ret = appletbdrm_get_information(adev);
 	if (ret) {

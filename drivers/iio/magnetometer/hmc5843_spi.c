@@ -56,11 +56,9 @@ static int hmc5843_spi_probe(struct spi_device *spi)
 {
 	int ret;
 	struct regmap *regmap;
-	const struct spi_device_id *id = spi_get_device_id(spi);
 
 	spi->mode = SPI_MODE_3;
 	spi->max_speed_hz = 8000000;
-	spi->bits_per_word = 8;
 	ret = spi_setup(spi);
 	if (ret)
 		return ret;
@@ -70,8 +68,7 @@ static int hmc5843_spi_probe(struct spi_device *spi)
 		return PTR_ERR(regmap);
 
 	return hmc5843_common_probe(&spi->dev,
-			regmap,
-			id->driver_data, id->name);
+			regmap, HMC5983_ID, "hmc5983");
 }
 
 static void hmc5843_spi_remove(struct spi_device *spi)
@@ -80,7 +77,7 @@ static void hmc5843_spi_remove(struct spi_device *spi)
 }
 
 static const struct spi_device_id hmc5843_id[] = {
-	{ "hmc5983", HMC5983_ID },
+	{ .name = "hmc5983" },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, hmc5843_id);

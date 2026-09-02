@@ -6,6 +6,7 @@
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
 //
 
+#include <linux/cleanup.h>
 #include <linux/debugfs.h>
 #include <linux/kfifo.h>
 #include <linux/wait.h>
@@ -13,6 +14,7 @@
 #include <linux/string_helpers.h>
 #include <sound/soc.h>
 #include "avs.h"
+#include "debug.h"
 #include "messages.h"
 
 static unsigned int __kfifo_fromio(struct kfifo *fifo, const void __iomem *src, unsigned int len)
@@ -118,16 +120,13 @@ static ssize_t probe_points_read(struct file *file, char __user *to, size_t coun
 	}
 
 	for (i = 0; i < num_desc; i++) {
-		ret = snprintf(buf + len, PAGE_SIZE - len,
-			       "Id: %#010x  Purpose: %d  Node id: %#x\n",
-			       desc[i].id.value, desc[i].purpose, desc[i].node_id.val);
-		if (ret < 0)
-			goto free_desc;
+		ret = scnprintf(buf + len, PAGE_SIZE - len,
+				"Id: %#010x  Purpose: %d  Node id: %#x\n",
+				desc[i].id.value, desc[i].purpose, desc[i].node_id.val);
 		len += ret;
 	}
 
 	ret = simple_read_from_buffer(to, count, ppos, buf, len);
-free_desc:
 	kfree(desc);
 exit:
 	kfree(buf);
@@ -144,7 +143,7 @@ static ssize_t probe_points_write(struct file *file, const char __user *from, si
 	int ret;
 
 	ret = parse_int_array_user(from, count, (int **)&array);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	num_elems = *array;
@@ -181,7 +180,7 @@ static ssize_t probe_points_disconnect_write(struct file *file, const char __use
 	int ret;
 
 	ret = parse_int_array_user(from, count, (int **)&array);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	num_elems = *array;
@@ -253,23 +252,21 @@ static int strace_release(struct inode *inode, struct file *file)
 	union avs_notify_msg msg = AVS_NOTIFICATION(LOG_BUFFER_STATUS);
 	struct avs_dev *adev = file->private_data;
 	unsigned long resource_mask;
-	unsigned long flags, i;
+	unsigned long i;
 	u32 num_cores;
 
 	resource_mask = adev->logged_resources;
 	num_cores = adev->hw_cfg.dsp_cores;
 
-	spin_lock_irqsave(&adev->trace_lock, flags);
+	scoped_guard(spinlock_irqsave, &adev->trace_lock) {
+		/* Gather any remaining logs. */
+		for_each_set_bit(i, &resource_mask, num_cores) {
+			msg.log.core = i;
+			avs_dsp_op(adev, log_buffer_status, &msg);
+		}
 
-	/* Gather any remaining logs. */
-	for_each_set_bit(i, &resource_mask, num_cores) {
-		msg.log.core = i;
-		avs_dsp_op(adev, log_buffer_status, &msg);
+		kfifo_free(&adev->trace_fifo);
 	}
-
-	kfifo_free(&adev->trace_fifo);
-
-	spin_unlock_irqrestore(&adev->trace_lock, flags);
 
 	module_put(adev->dev->driver->owner);
 	return 0;
@@ -315,7 +312,6 @@ err_ipc:
 	if (!adev->logged_resources) {
 		avs_dsp_enable_d0ix(adev);
 err_d0ix:
-		pm_runtime_mark_last_busy(adev->dev);
 		pm_runtime_put_autosuspend(adev->dev);
 	}
 
@@ -342,7 +338,6 @@ static int disable_logs(struct avs_dev *adev, u32 resource_mask)
 	/* If that's the last resource, allow for D3. */
 	if (!adev->logged_resources) {
 		avs_dsp_enable_d0ix(adev);
-		pm_runtime_mark_last_busy(adev->dev);
 		pm_runtime_put_autosuspend(adev->dev);
 	}
 
@@ -369,11 +364,14 @@ static ssize_t trace_control_write(struct file *file, const char __user *from, s
 	int ret;
 
 	ret = parse_int_array_user(from, count, (int **)&array);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	num_elems = *array;
-	resource_mask = array[1];
+	if (!num_elems) {
+		ret = -EINVAL;
+		goto free_array;
+	}
 
 	/*
 	 * Disable if just resource mask is provided - no log priority flags.
@@ -381,6 +379,7 @@ static ssize_t trace_control_write(struct file *file, const char __user *from, s
 	 * Enable input format:   mask, prio1, .., prioN
 	 * Where 'N' equals number of bits set in the 'mask'.
 	 */
+	resource_mask = array[1];
 	if (num_elems == 1) {
 		ret = disable_logs(adev, resource_mask);
 	} else {

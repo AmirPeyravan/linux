@@ -29,14 +29,17 @@
 #include "vsp1_hgo.h"
 #include "vsp1_hgt.h"
 #include "vsp1_hsit.h"
+#include "vsp1_iif.h"
 #include "vsp1_lif.h"
 #include "vsp1_lut.h"
 #include "vsp1_pipe.h"
+#include "vsp1_regs.h"
 #include "vsp1_rwpf.h"
 #include "vsp1_sru.h"
 #include "vsp1_uds.h"
 #include "vsp1_uif.h"
 #include "vsp1_video.h"
+#include "vsp1_vspx.h"
 
 /* -----------------------------------------------------------------------------
  * Interrupt Handling
@@ -48,10 +51,9 @@ static irqreturn_t vsp1_irq_handler(int irq, void *data)
 		   VI6_WPF_IRQ_STA_UND;
 	struct vsp1_device *vsp1 = data;
 	irqreturn_t ret = IRQ_NONE;
-	unsigned int i;
 	u32 status;
 
-	for (i = 0; i < vsp1->info->wpf_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->wpf_count; ++i) {
 		struct vsp1_rwpf *wpf = vsp1->wpf[i];
 
 		if (wpf == NULL)
@@ -100,7 +102,6 @@ static int vsp1_create_sink_links(struct vsp1_device *vsp1,
 {
 	struct media_entity *entity = &sink->subdev.entity;
 	struct vsp1_entity *source;
-	unsigned int pad;
 	int ret;
 
 	list_for_each_entry(source, &vsp1->entities, list_dev) {
@@ -120,7 +121,7 @@ static int vsp1_create_sink_links(struct vsp1_device *vsp1,
 			source->index == sink->index
 		      ? MEDIA_LNK_FL_ENABLED : 0;
 
-		for (pad = 0; pad < entity->num_pads; ++pad) {
+		for (unsigned int pad = 0; pad < entity->num_pads; ++pad) {
 			if (!(entity->pads[pad].flags & MEDIA_PAD_FL_SINK))
 				continue;
 
@@ -141,7 +142,6 @@ static int vsp1_create_sink_links(struct vsp1_device *vsp1,
 static int vsp1_uapi_create_links(struct vsp1_device *vsp1)
 {
 	struct vsp1_entity *entity;
-	unsigned int i;
 	int ret;
 
 	list_for_each_entry(entity, &vsp1->entities, list_dev) {
@@ -174,7 +174,7 @@ static int vsp1_uapi_create_links(struct vsp1_device *vsp1)
 			return ret;
 	}
 
-	for (i = 0; i < vsp1->info->lif_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->lif_count; ++i) {
 		if (!vsp1->lif[i])
 			continue;
 
@@ -186,7 +186,7 @@ static int vsp1_uapi_create_links(struct vsp1_device *vsp1)
 			return ret;
 	}
 
-	for (i = 0; i < vsp1->info->rpf_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->rpf_count; ++i) {
 		struct vsp1_rwpf *rpf = vsp1->rpf[i];
 
 		ret = media_create_pad_link(&rpf->video->video.entity, 0,
@@ -198,7 +198,7 @@ static int vsp1_uapi_create_links(struct vsp1_device *vsp1)
 			return ret;
 	}
 
-	for (i = 0; i < vsp1->info->wpf_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->wpf_count; ++i) {
 		/*
 		 * Connect the video device to the WPF. All connections are
 		 * immutable.
@@ -237,8 +237,12 @@ static void vsp1_destroy_entities(struct vsp1_device *vsp1)
 		media_device_unregister(&vsp1->media_dev);
 	media_device_cleanup(&vsp1->media_dev);
 
-	if (!vsp1->info->uapi)
-		vsp1_drm_cleanup(vsp1);
+	if (!vsp1->info->uapi) {
+		if (vsp1->info->version == VI6_IP_VERSION_MODEL_VSPX_GEN4)
+			vsp1_vspx_cleanup(vsp1);
+		else
+			vsp1_drm_cleanup(vsp1);
+	}
 }
 
 static int vsp1_create_entities(struct vsp1_device *vsp1)
@@ -246,7 +250,6 @@ static int vsp1_create_entities(struct vsp1_device *vsp1)
 	struct media_device *mdev = &vsp1->media_dev;
 	struct v4l2_device *vdev = &vsp1->v4l2_dev;
 	struct vsp1_entity *entity;
-	unsigned int i;
 	int ret;
 
 	mdev->dev = vsp1->dev;
@@ -302,22 +305,6 @@ static int vsp1_create_entities(struct vsp1_device *vsp1)
 		list_add_tail(&vsp1->clu->entity.list_dev, &vsp1->entities);
 	}
 
-	vsp1->hsi = vsp1_hsit_create(vsp1, true);
-	if (IS_ERR(vsp1->hsi)) {
-		ret = PTR_ERR(vsp1->hsi);
-		goto done;
-	}
-
-	list_add_tail(&vsp1->hsi->entity.list_dev, &vsp1->entities);
-
-	vsp1->hst = vsp1_hsit_create(vsp1, false);
-	if (IS_ERR(vsp1->hst)) {
-		ret = PTR_ERR(vsp1->hst);
-		goto done;
-	}
-
-	list_add_tail(&vsp1->hst->entity.list_dev, &vsp1->entities);
-
 	if (vsp1_feature(vsp1, VSP1_HAS_HGO) && vsp1->info->uapi) {
 		vsp1->hgo = vsp1_hgo_create(vsp1);
 		if (IS_ERR(vsp1->hgo)) {
@@ -340,13 +327,41 @@ static int vsp1_create_entities(struct vsp1_device *vsp1)
 			      &vsp1->entities);
 	}
 
+	if (vsp1_feature(vsp1, VSP1_HAS_IIF)) {
+		vsp1->iif = vsp1_iif_create(vsp1);
+		if (IS_ERR(vsp1->iif)) {
+			ret = PTR_ERR(vsp1->iif);
+			goto done;
+		}
+
+		list_add_tail(&vsp1->iif->entity.list_dev, &vsp1->entities);
+	}
+
+	if (vsp1_feature(vsp1, VSP1_HAS_HSIT)) {
+		vsp1->hsi = vsp1_hsit_create(vsp1, true);
+		if (IS_ERR(vsp1->hsi)) {
+			ret = PTR_ERR(vsp1->hsi);
+			goto done;
+		}
+
+		list_add_tail(&vsp1->hsi->entity.list_dev, &vsp1->entities);
+
+		vsp1->hst = vsp1_hsit_create(vsp1, false);
+		if (IS_ERR(vsp1->hst)) {
+			ret = PTR_ERR(vsp1->hst);
+			goto done;
+		}
+
+		list_add_tail(&vsp1->hst->entity.list_dev, &vsp1->entities);
+	}
+
 	/*
 	 * The LIFs are only supported when used in conjunction with the DU, in
 	 * which case the userspace API is disabled. If the userspace API is
 	 * enabled skip the LIFs, even when present.
 	 */
 	if (!vsp1->info->uapi) {
-		for (i = 0; i < vsp1->info->lif_count; ++i) {
+		for (unsigned int i = 0; i < vsp1->info->lif_count; ++i) {
 			struct vsp1_lif *lif;
 
 			lif = vsp1_lif_create(vsp1, i);
@@ -370,7 +385,7 @@ static int vsp1_create_entities(struct vsp1_device *vsp1)
 		list_add_tail(&vsp1->lut->entity.list_dev, &vsp1->entities);
 	}
 
-	for (i = 0; i < vsp1->info->rpf_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->rpf_count; ++i) {
 		struct vsp1_rwpf *rpf;
 
 		rpf = vsp1_rpf_create(vsp1, i);
@@ -404,7 +419,7 @@ static int vsp1_create_entities(struct vsp1_device *vsp1)
 		list_add_tail(&vsp1->sru->entity.list_dev, &vsp1->entities);
 	}
 
-	for (i = 0; i < vsp1->info->uds_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->uds_count; ++i) {
 		struct vsp1_uds *uds;
 
 		uds = vsp1_uds_create(vsp1, i);
@@ -417,7 +432,7 @@ static int vsp1_create_entities(struct vsp1_device *vsp1)
 		list_add_tail(&uds->entity.list_dev, &vsp1->entities);
 	}
 
-	for (i = 0; i < vsp1->info->uif_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->uif_count; ++i) {
 		struct vsp1_uif *uif;
 
 		uif = vsp1_uif_create(vsp1, i);
@@ -430,7 +445,7 @@ static int vsp1_create_entities(struct vsp1_device *vsp1)
 		list_add_tail(&uif->entity.list_dev, &vsp1->entities);
 	}
 
-	for (i = 0; i < vsp1->info->wpf_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->wpf_count; ++i) {
 		struct vsp1_rwpf *wpf;
 
 		wpf = vsp1_wpf_create(vsp1, i);
@@ -477,7 +492,10 @@ static int vsp1_create_entities(struct vsp1_device *vsp1)
 
 		ret = media_device_register(mdev);
 	} else {
-		ret = vsp1_drm_init(vsp1);
+		if (vsp1->info->version == VI6_IP_VERSION_MODEL_VSPX_GEN4)
+			ret = vsp1_vspx_init(vsp1);
+		else
+			ret = vsp1_drm_init(vsp1);
 	}
 
 done:
@@ -489,7 +507,9 @@ done:
 
 int vsp1_reset_wpf(struct vsp1_device *vsp1, unsigned int index)
 {
+	u32 version = vsp1->version & VI6_IP_VERSION_MODEL_MASK;
 	unsigned int timeout;
+	int ret = 0;
 	u32 status;
 
 	status = vsp1_read(vsp1, VI6_STATUS);
@@ -510,16 +530,19 @@ int vsp1_reset_wpf(struct vsp1_device *vsp1, unsigned int index)
 		return -ETIMEDOUT;
 	}
 
-	return 0;
+	if (version == VI6_IP_VERSION_MODEL_VSPD_GEN3 ||
+	    version == VI6_IP_VERSION_MODEL_VSPD_GEN4)
+		ret = rcar_fcp_soft_reset(vsp1->fcp);
+
+	return ret;
 }
 
 static int vsp1_device_init(struct vsp1_device *vsp1)
 {
-	unsigned int i;
 	int ret;
 
 	/* Reset any channel that might be running. */
-	for (i = 0; i < vsp1->info->wpf_count; ++i) {
+	for (unsigned int i = 0; i < vsp1->info->wpf_count; ++i) {
 		ret = vsp1_reset_wpf(vsp1, i);
 		if (ret < 0)
 			return ret;
@@ -528,13 +551,13 @@ static int vsp1_device_init(struct vsp1_device *vsp1)
 	vsp1_write(vsp1, VI6_CLK_DCSWT, (8 << VI6_CLK_DCSWT_CSTPW_SHIFT) |
 		   (8 << VI6_CLK_DCSWT_CSTRW_SHIFT));
 
-	for (i = 0; i < vsp1->info->rpf_count; ++i)
+	for (unsigned int i = 0; i < vsp1->info->rpf_count; ++i)
 		vsp1_write(vsp1, VI6_DPR_RPF_ROUTE(i), VI6_DPR_NODE_UNUSED);
 
-	for (i = 0; i < vsp1->info->uds_count; ++i)
+	for (unsigned int i = 0; i < vsp1->info->uds_count; ++i)
 		vsp1_write(vsp1, VI6_DPR_UDS_ROUTE(i), VI6_DPR_NODE_UNUSED);
 
-	for (i = 0; i < vsp1->info->uif_count; ++i)
+	for (unsigned int i = 0; i < vsp1->info->uif_count; ++i)
 		vsp1_write(vsp1, VI6_DPR_UIF_ROUTE(i), VI6_DPR_NODE_UNUSED);
 
 	vsp1_write(vsp1, VI6_DPR_SRU_ROUTE, VI6_DPR_NODE_UNUSED);
@@ -559,11 +582,9 @@ static int vsp1_device_init(struct vsp1_device *vsp1)
 
 static void vsp1_mask_all_interrupts(struct vsp1_device *vsp1)
 {
-	unsigned int i;
-
-	for (i = 0; i < vsp1->info->lif_count; ++i)
+	for (unsigned int i = 0; i < vsp1->info->lif_count; ++i)
 		vsp1_write(vsp1, VI6_DISP_IRQ_ENB(i), 0);
-	for (i = 0; i < vsp1->info->wpf_count; ++i)
+	for (unsigned int i = 0; i < vsp1->info->wpf_count; ++i)
 		vsp1_write(vsp1, VI6_WPF_IRQ_ENB(i), 0);
 }
 
@@ -594,7 +615,7 @@ void vsp1_device_put(struct vsp1_device *vsp1)
  * Power Management
  */
 
-static int __maybe_unused vsp1_pm_suspend(struct device *dev)
+static int vsp1_pm_suspend(struct device *dev)
 {
 	struct vsp1_device *vsp1 = dev_get_drvdata(dev);
 
@@ -610,7 +631,7 @@ static int __maybe_unused vsp1_pm_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused vsp1_pm_resume(struct device *dev)
+static int vsp1_pm_resume(struct device *dev)
 {
 	struct vsp1_device *vsp1 = dev_get_drvdata(dev);
 
@@ -626,7 +647,7 @@ static int __maybe_unused vsp1_pm_resume(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused vsp1_pm_runtime_suspend(struct device *dev)
+static int vsp1_pm_runtime_suspend(struct device *dev)
 {
 	struct vsp1_device *vsp1 = dev_get_drvdata(dev);
 
@@ -636,7 +657,7 @@ static int __maybe_unused vsp1_pm_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused vsp1_pm_runtime_resume(struct device *dev)
+static int vsp1_pm_runtime_resume(struct device *dev)
 {
 	struct vsp1_device *vsp1 = dev_get_drvdata(dev);
 	int ret;
@@ -669,8 +690,8 @@ done:
 }
 
 static const struct dev_pm_ops vsp1_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(vsp1_pm_suspend, vsp1_pm_resume)
-	SET_RUNTIME_PM_OPS(vsp1_pm_runtime_suspend, vsp1_pm_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(vsp1_pm_suspend, vsp1_pm_resume)
+	RUNTIME_PM_OPS(vsp1_pm_runtime_suspend, vsp1_pm_runtime_resume, NULL)
 };
 
 /* -----------------------------------------------------------------------------
@@ -683,8 +704,8 @@ static const struct vsp1_device_info vsp1_device_infos[] = {
 		.model = "VSP1-S",
 		.gen = 2,
 		.features = VSP1_HAS_BRU | VSP1_HAS_CLU | VSP1_HAS_HGO
-			  | VSP1_HAS_HGT | VSP1_HAS_LUT | VSP1_HAS_SRU
-			  | VSP1_HAS_WPF_VFLIP,
+			  | VSP1_HAS_HGT | VSP1_HAS_HSIT | VSP1_HAS_LUT
+			  | VSP1_HAS_SRU | VSP1_HAS_WPF_VFLIP,
 		.rpf_count = 5,
 		.uds_count = 3,
 		.wpf_count = 4,
@@ -694,7 +715,8 @@ static const struct vsp1_device_info vsp1_device_infos[] = {
 		.version = VI6_IP_VERSION_MODEL_VSPR_H2,
 		.model = "VSP1-R",
 		.gen = 2,
-		.features = VSP1_HAS_BRU | VSP1_HAS_SRU | VSP1_HAS_WPF_VFLIP,
+		.features = VSP1_HAS_BRU | VSP1_HAS_HSIT | VSP1_HAS_SRU
+			   | VSP1_HAS_WPF_VFLIP,
 		.rpf_count = 5,
 		.uds_count = 3,
 		.wpf_count = 4,
@@ -704,7 +726,8 @@ static const struct vsp1_device_info vsp1_device_infos[] = {
 		.version = VI6_IP_VERSION_MODEL_VSPD_GEN2,
 		.model = "VSP1-D",
 		.gen = 2,
-		.features = VSP1_HAS_BRU | VSP1_HAS_HGO | VSP1_HAS_LUT,
+		.features = VSP1_HAS_BRU | VSP1_HAS_HGO | VSP1_HAS_HSIT
+			  | VSP1_HAS_LUT,
 		.lif_count = 1,
 		.rpf_count = 4,
 		.uds_count = 1,
@@ -716,8 +739,8 @@ static const struct vsp1_device_info vsp1_device_infos[] = {
 		.model = "VSP1-S",
 		.gen = 2,
 		.features = VSP1_HAS_BRU | VSP1_HAS_CLU | VSP1_HAS_HGO
-			  | VSP1_HAS_HGT | VSP1_HAS_LUT | VSP1_HAS_SRU
-			  | VSP1_HAS_WPF_VFLIP,
+			  | VSP1_HAS_HGT | VSP1_HAS_HSIT | VSP1_HAS_LUT
+			  | VSP1_HAS_SRU | VSP1_HAS_WPF_VFLIP,
 		.rpf_count = 5,
 		.uds_count = 1,
 		.wpf_count = 4,
@@ -727,8 +750,8 @@ static const struct vsp1_device_info vsp1_device_infos[] = {
 		.version = VI6_IP_VERSION_MODEL_VSPS_V2H,
 		.model = "VSP1V-S",
 		.gen = 2,
-		.features = VSP1_HAS_BRU | VSP1_HAS_CLU | VSP1_HAS_LUT
-			  | VSP1_HAS_SRU | VSP1_HAS_WPF_VFLIP,
+		.features = VSP1_HAS_BRU | VSP1_HAS_CLU | VSP1_HAS_HSIT
+			  | VSP1_HAS_LUT | VSP1_HAS_SRU | VSP1_HAS_WPF_VFLIP,
 		.rpf_count = 4,
 		.uds_count = 1,
 		.wpf_count = 4,
@@ -738,7 +761,8 @@ static const struct vsp1_device_info vsp1_device_infos[] = {
 		.version = VI6_IP_VERSION_MODEL_VSPD_V2H,
 		.model = "VSP1V-D",
 		.gen = 2,
-		.features = VSP1_HAS_BRU | VSP1_HAS_CLU | VSP1_HAS_LUT,
+		.features = VSP1_HAS_BRU | VSP1_HAS_CLU | VSP1_HAS_HSIT
+			  | VSP1_HAS_LUT,
 		.lif_count = 1,
 		.rpf_count = 4,
 		.uds_count = 1,
@@ -750,8 +774,8 @@ static const struct vsp1_device_info vsp1_device_infos[] = {
 		.model = "VSP2-I",
 		.gen = 3,
 		.features = VSP1_HAS_CLU | VSP1_HAS_HGO | VSP1_HAS_HGT
-			  | VSP1_HAS_LUT | VSP1_HAS_SRU | VSP1_HAS_WPF_HFLIP
-			  | VSP1_HAS_WPF_VFLIP,
+			  | VSP1_HAS_HSIT | VSP1_HAS_LUT | VSP1_HAS_SRU
+			  | VSP1_HAS_WPF_HFLIP | VSP1_HAS_WPF_VFLIP,
 		.rpf_count = 1,
 		.uds_count = 1,
 		.wpf_count = 1,
@@ -835,6 +859,13 @@ static const struct vsp1_device_info vsp1_device_infos[] = {
 		.uif_count = 2,
 		.wpf_count = 1,
 		.num_bru_inputs = 5,
+	}, {
+		.version = VI6_IP_VERSION_MODEL_VSPX_GEN4,
+		.model = "VSP2-X",
+		.gen = 4,
+		.features = VSP1_HAS_IIF,
+		.rpf_count = 2,
+		.wpf_count = 1,
 	},
 };
 
@@ -853,7 +884,6 @@ static const struct vsp1_device_info rzg2l_vsp2_device_info = {
 static const struct vsp1_device_info *vsp1_lookup_info(struct vsp1_device *vsp1)
 {
 	const struct vsp1_device_info *info;
-	unsigned int i;
 	u32 model;
 	u32 soc;
 
@@ -871,7 +901,7 @@ static const struct vsp1_device_info *vsp1_lookup_info(struct vsp1_device *vsp1)
 	model = vsp1->version & VI6_IP_VERSION_MODEL_MASK;
 	soc = vsp1->version & VI6_IP_VERSION_SOC_MASK;
 
-	for (i = 0; i < ARRAY_SIZE(vsp1_device_infos); ++i) {
+	for (unsigned int i = 0; i < ARRAY_SIZE(vsp1_device_infos); ++i) {
 		info = &vsp1_device_infos[i];
 
 		if (model == info->version && (!info->soc || soc == info->soc))
@@ -909,7 +939,7 @@ static int vsp1_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	vsp1->rstc = devm_reset_control_get_shared(&pdev->dev, NULL);
+	vsp1->rstc = devm_reset_control_get_optional_shared(&pdev->dev, NULL);
 	if (IS_ERR(vsp1->rstc))
 		return dev_err_probe(&pdev->dev, PTR_ERR(vsp1->rstc),
 				     "failed to get reset control\n");
@@ -920,8 +950,7 @@ static int vsp1_probe(struct platform_device *pdev)
 		vsp1->fcp = rcar_fcp_get(fcp_node);
 		of_node_put(fcp_node);
 		if (IS_ERR(vsp1->fcp)) {
-			dev_dbg(&pdev->dev, "FCP not found (%ld)\n",
-				PTR_ERR(vsp1->fcp));
+			dev_dbg(&pdev->dev, "FCP not found (%pe)\n", vsp1->fcp);
 			return PTR_ERR(vsp1->fcp);
 		}
 
@@ -1008,7 +1037,7 @@ static struct platform_driver vsp1_platform_driver = {
 	.remove		= vsp1_remove,
 	.driver		= {
 		.name	= "vsp1",
-		.pm	= &vsp1_pm_ops,
+		.pm	= pm_ptr(&vsp1_pm_ops),
 		.of_match_table = vsp1_of_match,
 	},
 };

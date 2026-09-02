@@ -23,17 +23,17 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/list.h>
+#include <linux/platform_device.h>
+#include <linux/printk.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/suspend.h>
 #include <linux/acpi.h>
 #include <linux/dmi.h>
 #include <asm/io.h>
 
 #include "internal.h"
-
-#define ACPI_EC_CLASS			"embedded_controller"
-#define ACPI_EC_DEVICE_NAME		"Embedded Controller"
 
 /* EC status register */
 #define ACPI_EC_FLAG_OBF	0x01	/* Output buffer full */
@@ -1097,7 +1097,7 @@ int acpi_ec_add_query_handler(struct acpi_ec *ec, u8 query_bit,
 	if (!handle && !func)
 		return -EINVAL;
 
-	handler = kzalloc(sizeof(*handler), GFP_KERNEL);
+	handler = kzalloc_obj(*handler);
 	if (!handler)
 		return -ENOMEM;
 
@@ -1174,7 +1174,7 @@ static struct acpi_ec_query *acpi_ec_create_query(struct acpi_ec *ec, u8 *pval)
 	struct acpi_ec_query *q;
 	struct transaction *t;
 
-	q = kzalloc(sizeof (struct acpi_ec_query), GFP_KERNEL);
+	q = kzalloc_obj(struct acpi_ec_query);
 	if (!q)
 		return NULL;
 
@@ -1419,7 +1419,7 @@ static void acpi_ec_free(struct acpi_ec *ec)
 
 static struct acpi_ec *acpi_ec_alloc(void)
 {
-	struct acpi_ec *ec = kzalloc(sizeof(struct acpi_ec), GFP_KERNEL);
+	struct acpi_ec *ec = kzalloc_obj(struct acpi_ec);
 
 	if (!ec)
 		return NULL;
@@ -1510,6 +1510,24 @@ static bool install_gpio_irq_event_handler(struct acpi_ec *ec)
 				    IRQF_SHARED | IRQF_ONESHOT, "ACPI EC", ec) >= 0;
 }
 
+static int ec_prepare_gpio_irq(struct acpi_ec *ec, struct acpi_device *device)
+{
+	int irq;
+
+	if (!device || ec->gpe >= 0 || ec->irq >= 0)
+		return 0;
+
+	/* ACPI reduced hardware platforms use a GpioInt from _CRS. */
+	irq = acpi_dev_gpio_irq_get(device, 0);
+	if (irq == -EPROBE_DEFER)
+		return irq;
+
+	if (irq >= 0)
+		ec->irq = irq;
+
+	return 0;
+}
+
 /**
  * ec_install_handlers - Install service callbacks and register query methods.
  * @ec: Target EC.
@@ -1524,7 +1542,6 @@ static bool install_gpio_irq_event_handler(struct acpi_ec *ec)
  * Return:
  * -ENODEV if the address space handler cannot be installed, which means
  *  "unable to handle transactions",
- * -EPROBE_DEFER if GPIO IRQ acquisition needs to be deferred,
  * or 0 (success) otherwise.
  */
 static int ec_install_handlers(struct acpi_ec *ec, struct acpi_device *device,
@@ -1556,19 +1573,6 @@ static int ec_install_handlers(struct acpi_ec *ec, struct acpi_device *device,
 
 	if (!device)
 		return 0;
-
-	if (ec->gpe < 0) {
-		/* ACPI reduced hardware platforms use a GpioInt from _CRS. */
-		int irq = acpi_dev_gpio_irq_get(device, 0);
-		/*
-		 * Bail out right away for deferred probing or complete the
-		 * initialization regardless of any other errors.
-		 */
-		if (irq == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		else if (irq >= 0)
-			ec->irq = irq;
-	}
 
 	if (!test_bit(EC_FLAGS_QUERY_METHODS_INSTALLED, &ec->flags)) {
 		/* Find and register all query methods */
@@ -1647,12 +1651,22 @@ static int acpi_ec_setup(struct acpi_ec *ec, struct acpi_device *device, bool ca
 {
 	int ret;
 
+	/*
+	 * GPIO IRQ lookup can defer.  Do it before publishing the EC
+	 * OpRegion to AML to avoid a spurious _REG(disconnect).
+	 */
+	ret = ec_prepare_gpio_irq(ec, device);
+	if (ret)
+		return ret;
+
 	/* First EC capable of handling transactions */
 	if (!first_ec)
 		first_ec = ec;
 
 	ret = ec_install_handlers(ec, device, call_reg);
 	if (ret) {
+		ec_remove_handlers(ec);
+
 		if (ec == first_ec)
 			first_ec = NULL;
 
@@ -1672,13 +1686,15 @@ static int acpi_ec_setup(struct acpi_ec *ec, struct acpi_device *device, bool ca
 	return ret;
 }
 
-static int acpi_ec_add(struct acpi_device *device)
+static int acpi_ec_probe(struct platform_device *pdev)
 {
+	struct acpi_device *device;
 	struct acpi_ec *ec;
 	int ret;
 
-	strscpy(acpi_device_name(device), ACPI_EC_DEVICE_NAME);
-	strscpy(acpi_device_class(device), ACPI_EC_CLASS);
+	device = ACPI_COMPANION(&pdev->dev);
+	if (!device)
+		return -ENODEV;
 
 	if (boot_ec && (boot_ec->handle == device->handle ||
 	    !strcmp(acpi_device_hid(device), ACPI_ECDT_HID))) {
@@ -1728,7 +1744,7 @@ static int acpi_ec_add(struct acpi_device *device)
 	acpi_handle_info(ec->handle,
 			 "EC: Used to handle transactions and events\n");
 
-	device->driver_data = ec;
+	platform_set_drvdata(pdev, ec);
 
 	ret = !!request_region(ec->data_addr, 1, "EC data");
 	WARN(!ret, "Could not request EC data io port 0x%lx", ec->data_addr);
@@ -1748,17 +1764,12 @@ err:
 	return ret;
 }
 
-static void acpi_ec_remove(struct acpi_device *device)
+static void acpi_ec_remove(struct platform_device *pdev)
 {
-	struct acpi_ec *ec;
+	struct acpi_ec *ec = platform_get_drvdata(pdev);
 
-	if (!device)
-		return;
-
-	ec = acpi_driver_data(device);
 	release_region(ec->data_addr, 1);
 	release_region(ec->command_addr, 1);
-	device->driver_data = NULL;
 	if (ec != boot_ec) {
 		ec_remove_handlers(ec);
 		acpi_ec_free(ec);
@@ -2031,6 +2042,25 @@ void __init acpi_ec_ecdt_probe(void)
 		goto out;
 	}
 
+	if (!strlen(ecdt_ptr->id)) {
+		/*
+		 * The ECDT table on some MSI notebooks contains invalid data, together
+		 * with an empty ID string ("").
+		 *
+		 * Section 5.2.15 of the ACPI specification requires the ID string to be
+		 * a "fully qualified reference to the (...) embedded controller device",
+		 * so this string always has to start with a backslash.
+		 *
+		 * However some ThinkBook machines have a ECDT table with a valid EC
+		 * description but an invalid ID string ("_SB.PC00.LPCB.EC0").
+		 *
+		 * Because of this we only check if the ID string is empty in order to
+		 * avoid the obvious cases.
+		 */
+		pr_err(FW_BUG "Ignoring ECDT due to empty ID string\n");
+		goto out;
+	}
+
 	ec = acpi_ec_alloc();
 	if (!ec)
 		goto out;
@@ -2074,8 +2104,7 @@ out:
 #ifdef CONFIG_PM_SLEEP
 static int acpi_ec_suspend(struct device *dev)
 {
-	struct acpi_ec *ec =
-		acpi_driver_data(to_acpi_device(dev));
+	struct acpi_ec *ec = dev_get_drvdata(dev);
 
 	if (!pm_suspend_no_platform() && ec_freeze_events)
 		acpi_ec_disable_event(ec);
@@ -2084,7 +2113,7 @@ static int acpi_ec_suspend(struct device *dev)
 
 static int acpi_ec_suspend_noirq(struct device *dev)
 {
-	struct acpi_ec *ec = acpi_driver_data(to_acpi_device(dev));
+	struct acpi_ec *ec = dev_get_drvdata(dev);
 
 	/*
 	 * The SCI handler doesn't run at this point, so the GPE can be
@@ -2101,7 +2130,7 @@ static int acpi_ec_suspend_noirq(struct device *dev)
 
 static int acpi_ec_resume_noirq(struct device *dev)
 {
-	struct acpi_ec *ec = acpi_driver_data(to_acpi_device(dev));
+	struct acpi_ec *ec = dev_get_drvdata(dev);
 
 	acpi_ec_leave_noirq(ec);
 
@@ -2114,8 +2143,7 @@ static int acpi_ec_resume_noirq(struct device *dev)
 
 static int acpi_ec_resume(struct device *dev)
 {
-	struct acpi_ec *ec =
-		acpi_driver_data(to_acpi_device(dev));
+	struct acpi_ec *ec = dev_get_drvdata(dev);
 
 	acpi_ec_enable_event(ec);
 	return 0;
@@ -2244,15 +2272,14 @@ module_param_call(ec_event_clearing, param_set_event_clearing, param_get_event_c
 		  NULL, 0644);
 MODULE_PARM_DESC(ec_event_clearing, "Assumed SCI_EVT clearing timing");
 
-static struct acpi_driver acpi_ec_driver = {
-	.name = "ec",
-	.class = ACPI_EC_CLASS,
-	.ids = ec_device_ids,
-	.ops = {
-		.add = acpi_ec_add,
-		.remove = acpi_ec_remove,
-		},
-	.drv.pm = &acpi_ec_pm,
+static struct platform_driver acpi_ec_driver = {
+	.probe = acpi_ec_probe,
+	.remove = acpi_ec_remove,
+	.driver = {
+		.name = "acpi-ec",
+		.acpi_match_table = ec_device_ids,
+		.pm = &acpi_ec_pm,
+	},
 };
 
 static void acpi_ec_destroy_workqueues(void)
@@ -2273,7 +2300,8 @@ static int acpi_ec_init_workqueues(void)
 		ec_wq = alloc_ordered_workqueue("kec", 0);
 
 	if (!ec_query_wq)
-		ec_query_wq = alloc_workqueue("kec_query", 0, ec_max_queries);
+		ec_query_wq = alloc_workqueue("kec_query", WQ_PERCPU,
+					      ec_max_queries);
 
 	if (!ec_wq || !ec_query_wq) {
 		acpi_ec_destroy_workqueues();
@@ -2329,6 +2357,12 @@ static const struct dmi_system_id acpi_ec_no_wakeup[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "83Q3"),
 		}
 	},
+	{
+		// TUXEDO InfinityBook Pro AMD Gen9
+		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME, "GXxHRXx"),
+		},
+	},
 	{ },
 };
 
@@ -2350,17 +2384,7 @@ void __init acpi_ec_init(void)
 	}
 
 	/* Driver must be registered after acpi_ec_init_workqueues(). */
-	acpi_bus_register_driver(&acpi_ec_driver);
+	platform_driver_register(&acpi_ec_driver);
 
 	acpi_ec_ecdt_start();
 }
-
-/* EC driver currently not unloadable */
-#if 0
-static void __exit acpi_ec_exit(void)
-{
-
-	acpi_bus_unregister_driver(&acpi_ec_driver);
-	acpi_ec_destroy_workqueues();
-}
-#endif	/* 0 */

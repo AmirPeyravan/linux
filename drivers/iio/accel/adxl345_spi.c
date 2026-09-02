@@ -19,6 +19,8 @@ static const struct regmap_config adxl345_spi_regmap_config = {
 	.val_bits = 8,
 	 /* Setting bits 7 and 6 enables multiple-byte read */
 	.read_flag_mask = BIT(7) | BIT(6),
+	.volatile_reg = adxl345_is_volatile_reg,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static int adxl345_spi_setup(struct device *dev, struct regmap *regmap)
@@ -58,8 +60,8 @@ static const struct adxl345_chip_info adxl375_spi_info = {
 };
 
 static const struct spi_device_id adxl345_spi_id[] = {
-	{ "adxl345", (kernel_ulong_t)&adxl345_spi_info },
-	{ "adxl375", (kernel_ulong_t)&adxl375_spi_info },
+	{ .name = "adxl345", .driver_data = (kernel_ulong_t)&adxl345_spi_info },
+	{ .name = "adxl375", .driver_data = (kernel_ulong_t)&adxl375_spi_info },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, adxl345_spi_id);

@@ -43,7 +43,7 @@ static int pm_map_process_v9(struct packet_manager *pm,
 	memset(buffer, 0, sizeof(struct pm4_mes_map_process));
 	packet->header.u32All = pm_build_pm4_header(IT_MAP_PROCESS,
 					sizeof(struct pm4_mes_map_process));
-	if (adev->enforce_isolation[kfd->node_id])
+	if (adev->enforce_isolation[kfd->node_id] == AMDGPU_ENFORCE_ISOLATION_ENABLE)
 		packet->bitfields2.exec_cleaner_shader = 1;
 	packet->bitfields2.diq_enable = (qpd->is_debug) ? 1 : 0;
 	packet->bitfields2.process_quantum = 10;
@@ -102,7 +102,8 @@ static int pm_map_process_aldebaran(struct packet_manager *pm,
 	memset(buffer, 0, sizeof(struct pm4_mes_map_process_aldebaran));
 	packet->header.u32All = pm_build_pm4_header(IT_MAP_PROCESS,
 			sizeof(struct pm4_mes_map_process_aldebaran));
-	if (adev->enforce_isolation[knode->node_id])
+	if (adev->enforce_isolation[knode->node_id] ==
+	    AMDGPU_ENFORCE_ISOLATION_ENABLE)
 		packet->bitfields2.exec_cleaner_shader = 1;
 	packet->bitfields2.diq_enable = (qpd->is_debug) ? 1 : 0;
 	packet->bitfields2.process_quantum = 10;
@@ -165,9 +166,9 @@ static int pm_runlist_v9(struct packet_manager *pm, uint32_t *buffer,
 	 * hws_max_conc_proc has been done in
 	 * kgd2kfd_device_init().
 	 */
-	concurrent_proc_cnt = adev->enforce_isolation[kfd->node_id] ?
-			1 : min(pm->dqm->processes_count,
-			kfd->max_proc_per_quantum);
+	concurrent_proc_cnt = (adev->enforce_isolation[kfd->node_id] ==
+			       AMDGPU_ENFORCE_ISOLATION_ENABLE) ?
+		1 : min(pm->dqm->processes_count, kfd->max_proc_per_quantum);
 
 	packet = (struct pm4_mes_runlist *)buffer;
 
@@ -202,6 +203,8 @@ static int pm_set_resources_v9(struct packet_manager *pm, uint32_t *buffer,
 			queue_type__mes_set_resources__hsa_interface_queue_hiq;
 	packet->bitfields2.vmid_mask = res->vmid_mask;
 	packet->bitfields2.unmap_latency = KFD_UNMAP_LATENCY_MS / 100;
+	if (pm->dqm->dev->adev->gmc.xnack_flags & AMDGPU_GMC_XNACK_FLAG_CHAIN)
+		packet->bitfields2.enb_xnack_retry_disable_check = 1;
 	packet->bitfields7.oac_mask = res->oac_mask;
 	packet->bitfields8.gds_heap_base = res->gds_heap_base;
 	packet->bitfields8.gds_heap_size = res->gds_heap_size;
@@ -237,7 +240,7 @@ static int pm_map_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 
 	packet->bitfields2.engine_sel =
 		engine_sel__mes_map_queues__compute_vi;
-	packet->bitfields2.gws_control_queue = q->gws ? 1 : 0;
+	packet->bitfields2.gws_control_queue = q->properties.is_gws ? 1 : 0;
 	packet->bitfields2.extended_engine_sel =
 		extended_engine_sel__mes_map_queues__legacy_engine_sel;
 	packet->bitfields2.queue_type =
@@ -248,10 +251,6 @@ static int pm_map_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 		if (is_static)
 			packet->bitfields2.queue_type =
 		queue_type__mes_map_queues__normal_latency_static_queue_vi;
-		break;
-	case KFD_QUEUE_TYPE_DIQ:
-		packet->bitfields2.queue_type =
-			queue_type__mes_map_queues__debug_interface_queue_vi;
 		break;
 	case KFD_QUEUE_TYPE_SDMA:
 	case KFD_QUEUE_TYPE_SDMA_XGMI:
@@ -310,6 +309,67 @@ static inline void pm_build_dequeue_wait_counts_packet_info(struct packet_manage
 		reg_data);
 }
 
+/* pm_grace_period_0_supported - whether firmware tolerates a CWSR grace
+ * period of 0 on this ASIC.
+ *
+ * The debugger may request a grace period of 0 via AMDKFD_IOC_DBG_TRAP.
+ * Most firmware revisions locked up on an infinite (0) grace period, so
+ * an earlier change clamped 0 to 1 for all ASICs. Firmware has since been
+ * fixed on most ASICs; return true only where the running MEC firmware is
+ * known to handle 0. The +32768 offset on IP_VERSION(9, 0, 1) accounts for
+ * the SR-IOV firmware version encoding.
+ *
+ * Navi3x (gfx11) and MI350 (IP_VERSION(9, 5, 0)) support a grace period of
+ * 0 in every firmware revision and need no version check. MI100
+ * (IP_VERSION(9, 4, 1)) never received the fix and is intentionally kept
+ * clamped. Any unlisted or future ASIC defaults to the safe behaviour
+ * (clamp).
+ */
+static bool pm_grace_period_0_supported(struct packet_manager *pm)
+{
+	struct kfd_node *dev = pm->dqm->dev;
+	uint32_t mec_fw_version = dev->kfd->mec_fw_version;
+
+	/* Navi3x (gfx11) always supports a grace period of 0. */
+	if (KFD_GC_VERSION(dev) >= IP_VERSION(11, 0, 0) &&
+	    KFD_GC_VERSION(dev) < IP_VERSION(12, 0, 0))
+		return true;
+
+	switch (KFD_GC_VERSION(dev)) {
+	case IP_VERSION(9, 0, 1):
+		return mec_fw_version >= 461 + 32768;
+	case IP_VERSION(9, 1, 0):
+	case IP_VERSION(9, 2, 1):
+	case IP_VERSION(9, 2, 2):
+	case IP_VERSION(9, 3, 0):
+	case IP_VERSION(9, 4, 0):
+		return mec_fw_version >= 461;
+	/* MI100/Arcturus never received the firmware fix; keep clamped. */
+	case IP_VERSION(9, 4, 1):
+		return false;
+	case IP_VERSION(9, 4, 2):
+		return mec_fw_version >= 63;
+	case IP_VERSION(9, 4, 3):
+	case IP_VERSION(9, 4, 4):
+		return mec_fw_version >= 96;
+	/* MI350 supports a grace period of 0 in every firmware revision. */
+	case IP_VERSION(9, 5, 0):
+		return true;
+	case IP_VERSION(10, 1, 10):
+	case IP_VERSION(10, 1, 2):
+	case IP_VERSION(10, 1, 1):
+		return mec_fw_version >= 146;
+	case IP_VERSION(10, 3, 0):
+	case IP_VERSION(10, 3, 2):
+	case IP_VERSION(10, 3, 1):
+	case IP_VERSION(10, 3, 4):
+	case IP_VERSION(10, 3, 5):
+		return mec_fw_version >= 93;
+	default:
+		return false;
+	}
+}
+
 /* pm_config_dequeue_wait_counts_v9: Builds WRITE_DATA packet with
  *    register/value for configuring dequeue wait counts
  *
@@ -358,11 +418,12 @@ static int pm_config_dequeue_wait_counts_v9(struct packet_manager *pm,
 		break;
 
 	case KFD_DEQUEUE_WAIT_SET_SCH_WAVE:
-		/* The CP cannot handle value 0 and it will result in
-		 * an infinite grace period being set so set to 1 to prevent this. Also
-		 * avoid debugger API breakage as it sets 0 and expects a low value.
+		/* A grace period of 0 requests an infinite CWSR grace period.
+		 * Older firmware locks up on this, so clamp to 1 unless the ASIC
+		 * firmware is known to handle 0. Also avoid debugger API breakage
+		 * as it sets 0 and expects a low value.
 		 */
-		if (!value)
+		if (!value && !pm_grace_period_0_supported(pm))
 			value = 1;
 		pm_build_dequeue_wait_counts_packet_info(pm, value, 0, &reg_offset, &reg_data);
 		break;

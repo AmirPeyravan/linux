@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2024-2025 Intel Corporation
+ * Copyright (C) 2024-2026 Intel Corporation
  */
 
 #ifndef __iwl_mld_kunit_utils_h__
@@ -14,9 +14,8 @@ struct iwl_mld;
 int iwlmld_kunit_test_init(struct kunit *test);
 
 struct iwl_mld_kunit_link {
+	const struct cfg80211_chan_def *chandef;
 	u8 id;
-	enum nl80211_band band;
-	enum nl80211_chan_width bandwidth;
 };
 
 enum nl80211_iftype;
@@ -42,50 +41,59 @@ static struct ieee80211_channel _name = {			\
 	.hw_value = (_freq),					\
 }
 
+CHANNEL(chan_2ghz, NL80211_BAND_2GHZ, 2412);
+CHANNEL(chan_2ghz_11, NL80211_BAND_2GHZ, 2462);
+CHANNEL(chan_5ghz, NL80211_BAND_5GHZ, 5200);
+CHANNEL(chan_5ghz_120, NL80211_BAND_5GHZ, 5600);
+CHANNEL(chan_6ghz, NL80211_BAND_6GHZ, 6115);
+CHANNEL(chan_6ghz_221, NL80211_BAND_6GHZ, 7055);
+/* Feel free to add more */
+#undef CHANNEL
+
+#define CHANDEF_LIST \
+	CHANDEF(chandef_2ghz_20mhz, chan_2ghz, 2412,		\
+		NL80211_CHAN_WIDTH_20)				\
+	CHANDEF(chandef_2ghz_40mhz, chan_2ghz, 2422,		\
+		NL80211_CHAN_WIDTH_40)				\
+	CHANDEF(chandef_2ghz_11_20mhz, chan_2ghz_11, 2462,	\
+		NL80211_CHAN_WIDTH_20)				\
+	CHANDEF(chandef_5ghz_20mhz, chan_5ghz, 5200,		\
+		NL80211_CHAN_WIDTH_20)				\
+	CHANDEF(chandef_5ghz_40mhz, chan_5ghz, 5210,		\
+		NL80211_CHAN_WIDTH_40)				\
+	CHANDEF(chandef_5ghz_80mhz, chan_5ghz, 5210,		\
+		NL80211_CHAN_WIDTH_80)				\
+	CHANDEF(chandef_5ghz_160mhz, chan_5ghz, 5250,		\
+		NL80211_CHAN_WIDTH_160)				\
+	CHANDEF(chandef_5ghz_120_40mhz, chan_5ghz_120, 5610,	\
+		NL80211_CHAN_WIDTH_40)				\
+	CHANDEF(chandef_6ghz_20mhz, chan_6ghz, 6115,		\
+		NL80211_CHAN_WIDTH_20)				\
+	CHANDEF(chandef_6ghz_40mhz, chan_6ghz, 6125,		\
+		NL80211_CHAN_WIDTH_40)				\
+	CHANDEF(chandef_6ghz_80mhz, chan_6ghz, 6145,		\
+		NL80211_CHAN_WIDTH_80)				\
+	CHANDEF(chandef_6ghz_160mhz, chan_6ghz, 6185,		\
+		NL80211_CHAN_WIDTH_160)				\
+	CHANDEF(chandef_6ghz_320mhz, chan_6ghz, 6105,		\
+		NL80211_CHAN_WIDTH_320)				\
+	CHANDEF(chandef_6ghz_320mhz_pri0, chan_6ghz, 6265,	\
+		NL80211_CHAN_WIDTH_320)				\
+	CHANDEF(chandef_6ghz_221_160mhz, chan_6ghz_221, 6985,	\
+		NL80211_CHAN_WIDTH_160)				\
+	/* Feel free to add more */
+
 #define CHANDEF(_name, _channel, _freq1, _width)		\
-__maybe_unused static struct cfg80211_chan_def _name = {	\
+__maybe_unused static const struct cfg80211_chan_def _name = {	\
 	.chan = &(_channel),					\
 	.center_freq1 = (_freq1),				\
 	.width = (_width),					\
-}
-
-CHANNEL(chan_2ghz, NL80211_BAND_2GHZ, 2412);
-CHANNEL(chan_5ghz, NL80211_BAND_5GHZ, 5200);
-CHANNEL(chan_6ghz, NL80211_BAND_6GHZ, 6115);
-/* Feel free to add more */
-
-CHANDEF(chandef_2ghz, chan_2ghz, 2412, NL80211_CHAN_WIDTH_20);
-CHANDEF(chandef_5ghz, chan_5ghz, 5200, NL80211_CHAN_WIDTH_40);
-CHANDEF(chandef_6ghz, chan_6ghz, 6115, NL80211_CHAN_WIDTH_160);
-/* Feel free to add more */
-
-//struct cfg80211_chan_def;
+};
+CHANDEF_LIST
+#undef CHANDEF
 
 struct ieee80211_chanctx_conf *
-iwlmld_kunit_add_chanctx_from_def(struct cfg80211_chan_def *def);
-
-static inline struct ieee80211_chanctx_conf *
-iwlmld_kunit_add_chanctx(enum nl80211_band band, enum nl80211_chan_width width)
-{
-	struct cfg80211_chan_def chandef;
-
-	switch (band) {
-	case NL80211_BAND_2GHZ:
-		chandef = chandef_2ghz;
-		break;
-	case NL80211_BAND_5GHZ:
-		chandef = chandef_5ghz;
-		break;
-	default:
-	case NL80211_BAND_6GHZ:
-		chandef = chandef_6ghz;
-		break;
-	}
-
-	chandef.width = width;
-
-	return iwlmld_kunit_add_chanctx_from_def(&chandef);
-}
+iwlmld_kunit_add_chanctx(const struct cfg80211_chan_def *def);
 
 void iwlmld_kunit_assign_chanctx_to_link(struct ieee80211_vif *vif,
 					 struct ieee80211_bss_conf *link,
@@ -114,6 +122,11 @@ iwlmld_kunit_assoc_emlsr(struct iwl_mld_kunit_link *link1,
 			 struct iwl_mld_kunit_link *link2);
 
 struct element *iwlmld_kunit_gen_element(u8 id, const void *data, size_t len);
+
+struct element *
+iwlmld_kunit_create_he_6ghz_oper(struct ieee80211_he_6ghz_oper he_6ghz);
+
+struct cfg80211_bss_ies *iwlmld_kunit_create_bss_ies(struct element *elem);
 
 /**
  * iwlmld_kunit_get_phy_of_link - Get the phy of a link

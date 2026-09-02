@@ -2,7 +2,7 @@
 /*
  * max14577-private.h - Common API for the Maxim 14577/77836 internal sub chip
  *
- * Copyright (C) 2014 Samsung Electrnoics
+ * Copyright (C) 2014 Samsung Electronics
  * Chanwoo Choi <cw00.choi@samsung.com>
  * Krzysztof Kozlowski <krzk@kernel.org>
  */
@@ -350,6 +350,9 @@ enum max77836_pmic_reg {
 #define MAX77836_CNFG1_LDO_PWRMD_SHIFT		6
 #define MAX77836_CNFG1_LDO_TV_SHIFT		0
 #define MAX77836_CNFG1_LDO_PWRMD_MASK		(0x3 << MAX77836_CNFG1_LDO_PWRMD_SHIFT)
+#define MAX77836_CNFG1_LDO_PWRMD_OFF		(0x0 << MAX77836_CNFG1_LDO_PWRMD_SHIFT)
+#define MAX77836_CNFG1_LDO_PWRMD_LPM		(0x1 << MAX77836_CNFG1_LDO_PWRMD_SHIFT)
+#define MAX77836_CNFG1_LDO_PWRMD_NORMAL		(0x3 << MAX77836_CNFG1_LDO_PWRMD_SHIFT)
 #define MAX77836_CNFG1_LDO_TV_MASK		(0x3f << MAX77836_CNFG1_LDO_TV_SHIFT)
 
 /* LDO1/LDO2 CONFIG2 register */

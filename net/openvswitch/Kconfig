@@ -11,8 +11,8 @@ config OPENVSWITCH
 				     (!NF_NAT || NF_NAT) && \
 				     (!NETFILTER_CONNCOUNT || NETFILTER_CONNCOUNT)))
 	depends on PSAMPLE || !PSAMPLE
-	select CRC32
 	select MPLS
+	select NET_CRC32C
 	select NET_MPLS_GSO
 	select DST_CACHE
 	select NET_NSH
@@ -40,38 +40,3 @@ config OPENVSWITCH
 	  called openvswitch.
 
 	  If unsure, say N.
-
-config OPENVSWITCH_GRE
-	tristate "Open vSwitch GRE tunneling support"
-	depends on OPENVSWITCH
-	depends on NET_IPGRE
-	default OPENVSWITCH
-	help
-	  If you say Y here, then the Open vSwitch will be able create GRE
-	  vport.
-
-	  Say N to exclude this support and reduce the binary size.
-
-	  If unsure, say Y.
-
-config OPENVSWITCH_VXLAN
-	tristate "Open vSwitch VXLAN tunneling support"
-	depends on OPENVSWITCH
-	depends on VXLAN
-	default OPENVSWITCH
-	help
-	  If you say Y here, then the Open vSwitch will be able create vxlan vport.
-
-	  Say N to exclude this support and reduce the binary size.
-
-	  If unsure, say Y.
-
-config OPENVSWITCH_GENEVE
-	tristate "Open vSwitch Geneve tunneling support"
-	depends on OPENVSWITCH
-	depends on GENEVE
-	default OPENVSWITCH
-	help
-	  If you say Y here, then the Open vSwitch will be able create geneve vport.
-
-	  Say N to exclude this support and reduce the binary size.

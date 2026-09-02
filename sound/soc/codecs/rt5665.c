@@ -6,6 +6,7 @@
  * Author: Bard Liao <bardliao@realtek.com>
  */
 
+#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
@@ -993,7 +994,7 @@ static const struct snd_kcontrol_new rt5665_if3_adc_swap_mux =
 static int rt5665_hp_vol_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	int ret = snd_soc_put_volsw(kcontrol, ucontrol);
 
 	if (snd_soc_component_read(component, RT5665_STO_NG2_CTRL_1) & RT5665_NG2_EN) {
@@ -1009,7 +1010,7 @@ static int rt5665_hp_vol_put(struct snd_kcontrol *kcontrol,
 static int rt5665_mono_vol_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	int ret = snd_soc_put_volsw(kcontrol, ucontrol);
 
 	if (snd_soc_component_read(component, RT5665_MONO_NG2_CTRL_1) & RT5665_NG2_EN) {
@@ -1021,102 +1022,6 @@ static int rt5665_mono_vol_put(struct snd_kcontrol *kcontrol,
 
 	return ret;
 }
-
-/**
- * rt5665_sel_asrc_clk_src - select ASRC clock source for a set of filters
- * @component: SoC audio component device.
- * @filter_mask: mask of filters.
- * @clk_src: clock source
- *
- * The ASRC function is for asynchronous MCLK and LRCK. Also, since RT5665 can
- * only support standard 32fs or 64fs i2s format, ASRC should be enabled to
- * support special i2s clock format such as Intel's 100fs(100 * sampling rate).
- * ASRC function will track i2s clock and generate a corresponding system clock
- * for codec. This function provides an API to select the clock source for a
- * set of filters specified by the mask. And the codec driver will turn on ASRC
- * for these filters if ASRC is selected as their clock source.
- */
-int rt5665_sel_asrc_clk_src(struct snd_soc_component *component,
-		unsigned int filter_mask, unsigned int clk_src)
-{
-	unsigned int asrc2_mask = 0;
-	unsigned int asrc2_value = 0;
-	unsigned int asrc3_mask = 0;
-	unsigned int asrc3_value = 0;
-
-	switch (clk_src) {
-	case RT5665_CLK_SEL_SYS:
-	case RT5665_CLK_SEL_I2S1_ASRC:
-	case RT5665_CLK_SEL_I2S2_ASRC:
-	case RT5665_CLK_SEL_I2S3_ASRC:
-	case RT5665_CLK_SEL_SYS2:
-	case RT5665_CLK_SEL_SYS3:
-	case RT5665_CLK_SEL_SYS4:
-		break;
-
-	default:
-		return -EINVAL;
-	}
-
-	if (filter_mask & RT5665_DA_STEREO1_FILTER) {
-		asrc2_mask |= RT5665_DA_STO1_CLK_SEL_MASK;
-		asrc2_value = (asrc2_value & ~RT5665_DA_STO1_CLK_SEL_MASK)
-			| (clk_src << RT5665_DA_STO1_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_DA_STEREO2_FILTER) {
-		asrc2_mask |= RT5665_DA_STO2_CLK_SEL_MASK;
-		asrc2_value = (asrc2_value & ~RT5665_DA_STO2_CLK_SEL_MASK)
-			| (clk_src << RT5665_DA_STO2_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_DA_MONO_L_FILTER) {
-		asrc2_mask |= RT5665_DA_MONOL_CLK_SEL_MASK;
-		asrc2_value = (asrc2_value & ~RT5665_DA_MONOL_CLK_SEL_MASK)
-			| (clk_src << RT5665_DA_MONOL_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_DA_MONO_R_FILTER) {
-		asrc2_mask |= RT5665_DA_MONOR_CLK_SEL_MASK;
-		asrc2_value = (asrc2_value & ~RT5665_DA_MONOR_CLK_SEL_MASK)
-			| (clk_src << RT5665_DA_MONOR_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_AD_STEREO1_FILTER) {
-		asrc3_mask |= RT5665_AD_STO1_CLK_SEL_MASK;
-		asrc3_value = (asrc2_value & ~RT5665_AD_STO1_CLK_SEL_MASK)
-			| (clk_src << RT5665_AD_STO1_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_AD_STEREO2_FILTER) {
-		asrc3_mask |= RT5665_AD_STO2_CLK_SEL_MASK;
-		asrc3_value = (asrc2_value & ~RT5665_AD_STO2_CLK_SEL_MASK)
-			| (clk_src << RT5665_AD_STO2_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_AD_MONO_L_FILTER) {
-		asrc3_mask |= RT5665_AD_MONOL_CLK_SEL_MASK;
-		asrc3_value = (asrc3_value & ~RT5665_AD_MONOL_CLK_SEL_MASK)
-			| (clk_src << RT5665_AD_MONOL_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_AD_MONO_R_FILTER)  {
-		asrc3_mask |= RT5665_AD_MONOR_CLK_SEL_MASK;
-		asrc3_value = (asrc3_value & ~RT5665_AD_MONOR_CLK_SEL_MASK)
-			| (clk_src << RT5665_AD_MONOR_CLK_SEL_SFT);
-	}
-
-	if (asrc2_mask)
-		snd_soc_component_update_bits(component, RT5665_ASRC_2,
-			asrc2_mask, asrc2_value);
-
-	if (asrc3_mask)
-		snd_soc_component_update_bits(component, RT5665_ASRC_3,
-			asrc3_mask, asrc3_value);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(rt5665_sel_asrc_clk_src);
 
 static int rt5665_button_detect(struct snd_soc_component *component)
 {
@@ -1163,7 +1068,7 @@ static void rt5665_enable_push_button_irq(struct snd_soc_component *component,
 static int rt5665_headset_detect(struct snd_soc_component *component, int jack_insert)
 {
 	struct rt5665_priv *rt5665 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	unsigned int sar_hs_type, val;
 
 	if (jack_insert) {
@@ -1304,7 +1209,7 @@ static void rt5665_jack_detect_handler(struct work_struct *work)
 		usleep_range(10000, 15000);
 	}
 
-	mutex_lock(&rt5665->calibrate_mutex);
+	guard(mutex)(&rt5665->calibrate_mutex);
 
 	val = snd_soc_component_read(rt5665->component, RT5665_AJD1_CTRL) & 0x0010;
 	if (!val) {
@@ -1370,8 +1275,6 @@ static void rt5665_jack_detect_handler(struct work_struct *work)
 		schedule_delayed_work(&rt5665->jd_check_work, 0);
 	else
 		cancel_delayed_work_sync(&rt5665->jd_check_work);
-
-	mutex_unlock(&rt5665->calibrate_mutex);
 }
 
 static const char * const rt5665_clk_sync[] = {
@@ -4630,8 +4533,8 @@ static const struct regmap_config rt5665_regmap = {
 };
 
 static const struct i2c_device_id rt5665_i2c_id[] = {
-	{"rt5665"},
-	{}
+	{ .name = "rt5665" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt5665_i2c_id);
 
@@ -4660,7 +4563,7 @@ static void rt5665_calibrate(struct rt5665_priv *rt5665)
 {
 	int value, count;
 
-	mutex_lock(&rt5665->calibrate_mutex);
+	guard(mutex)(&rt5665->calibrate_mutex);
 
 	regcache_cache_bypass(rt5665->regmap, true);
 
@@ -4697,7 +4600,8 @@ static void rt5665_calibrate(struct rt5665_priv *rt5665)
 			pr_err("HP Calibration Failure\n");
 			regmap_write(rt5665->regmap, RT5665_RESET, 0);
 			regcache_cache_bypass(rt5665->regmap, false);
-			goto out_unlock;
+			rt5665->calibration_done = true;
+			return;
 		}
 
 		count++;
@@ -4716,7 +4620,8 @@ static void rt5665_calibrate(struct rt5665_priv *rt5665)
 			pr_err("MONO Calibration Failure\n");
 			regmap_write(rt5665->regmap, RT5665_RESET, 0);
 			regcache_cache_bypass(rt5665->regmap, false);
-			goto out_unlock;
+			rt5665->calibration_done = true;
+			return;
 		}
 
 		count++;
@@ -4731,9 +4636,7 @@ static void rt5665_calibrate(struct rt5665_priv *rt5665)
 	regmap_write(rt5665->regmap, RT5665_BIAS_CUR_CTRL_8, 0xa602);
 	regmap_write(rt5665->regmap, RT5665_ASRC_8, 0x0120);
 
-out_unlock:
 	rt5665->calibration_done = true;
-	mutex_unlock(&rt5665->calibrate_mutex);
 }
 
 static void rt5665_calibrate_handler(struct work_struct *work)
@@ -4784,7 +4687,7 @@ static int rt5665_i2c_probe(struct i2c_client *i2c)
 		return PTR_ERR(rt5665->gpiod_ldo1_en);
 	}
 
-	/* Sleep for 300 ms miniumum */
+	/* Sleep for 300 ms minimum */
 	usleep_range(300000, 350000);
 
 	rt5665->regmap = devm_regmap_init_i2c(i2c, &rt5665_regmap);

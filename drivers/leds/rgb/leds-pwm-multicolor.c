@@ -9,7 +9,6 @@
 #include <linux/kernel.h>
 #include <linux/led-class-multicolor.h>
 #include <linux/leds.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
@@ -95,6 +94,8 @@ static int iterate_subleds(struct device *dev, struct pwm_mc_led *priv,
 		}
 
 		subled[priv->mc_cdev.num_colors].color_index = color;
+		fwnode_property_read_u32(fwnode, "default-intensity",
+					 &subled[priv->mc_cdev.num_colors].intensity);
 		priv->mc_cdev.num_colors++;
 	}
 
@@ -107,12 +108,12 @@ release_fwnode:
 
 static int led_pwm_mc_probe(struct platform_device *pdev)
 {
-	struct fwnode_handle *mcnode, *fwnode;
+	struct fwnode_handle *mcnode;
 	struct led_init_data init_data = {};
 	struct led_classdev *cdev;
 	struct mc_subled *subled;
 	struct pwm_mc_led *priv;
-	int count = 0;
+	unsigned int count;
 	int ret = 0;
 
 	mcnode = device_get_named_child_node(&pdev->dev, "multi-led");
@@ -121,8 +122,7 @@ static int led_pwm_mc_probe(struct platform_device *pdev)
 				     "expected multi-led node\n");
 
 	/* count the nodes inside the multi-led node */
-	fwnode_for_each_child_node(mcnode, fwnode)
-		count++;
+	count = fwnode_get_child_node_count(mcnode);
 
 	priv = devm_kzalloc(&pdev->dev, struct_size(priv, leds, count),
 			    GFP_KERNEL);

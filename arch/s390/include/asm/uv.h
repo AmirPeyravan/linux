@@ -16,7 +16,6 @@
 #include <linux/bug.h>
 #include <linux/sched.h>
 #include <asm/page.h>
-#include <asm/gmap.h>
 #include <asm/asm.h>
 
 #define UVC_CC_OK	0
@@ -455,18 +454,6 @@ static inline int uv_call(unsigned long r1, unsigned long r2)
 	return cc;
 }
 
-/* Low level uv_call that avoids stalls for long running busy conditions  */
-static inline int uv_call_sched(unsigned long r1, unsigned long r2)
-{
-	int cc;
-
-	do {
-		cc = __uv_call(r1, r2);
-		cond_resched();
-	} while (cc > 1);
-	return cc;
-}
-
 /*
  * special variant of uv_call that only transports the cpu or guest
  * handle and the command, like destroy or verify.
@@ -481,7 +468,7 @@ static inline int uv_cmd_nodata(u64 handle, u16 cmd, u16 *rc, u16 *rrc)
 	int cc;
 
 	WARN(!handle, "No handle provided to Ultravisor call cmd %x\n", cmd);
-	cc = uv_call_sched(0, (u64)&uvcb);
+	cc = uv_call(0, (u64)&uvcb);
 	*rc = uvcb.header.rc;
 	*rrc = uvcb.header.rrc;
 	return cc ? -EINVAL : 0;
@@ -519,7 +506,7 @@ static inline int uv_list_secrets(struct uv_secret_list *buf, u16 start_idx,
 		.start_idx = start_idx,
 		.list_addr = (u64)buf,
 	};
-	int cc = uv_call_sched(0, (u64)&uvcb);
+	int cc = uv_call(0, (u64)&uvcb);
 
 	if (rc)
 		*rc = uvcb.header.rc;
@@ -616,8 +603,9 @@ static inline int uv_remove_shared(unsigned long addr)
 	return share(addr, UVC_CMD_REMOVE_SHARED_ACCESS);
 }
 
-int uv_get_secret_metadata(const u8 secret_id[UV_SECRET_ID_LEN],
-			   struct uv_secret_list_item_hdr *secret);
+int uv_find_secret(const u8 secret_id[UV_SECRET_ID_LEN],
+		   struct uv_secret_list *list,
+		   struct uv_secret_list_item_hdr *secret);
 int uv_retrieve_secret(u16 secret_idx, u8 *buf, size_t buf_size);
 
 extern int prot_virt_host;
@@ -631,9 +619,12 @@ int uv_pin_shared(unsigned long paddr);
 int uv_destroy_folio(struct folio *folio);
 int uv_destroy_pte(pte_t pte);
 int uv_convert_from_secure_pte(pte_t pte);
-int make_hva_secure(struct mm_struct *mm, unsigned long hva, struct uv_cb_header *uvcb);
+int s390_wiggle_split_folio(struct mm_struct *mm, struct folio *folio);
+int __make_folio_secure(struct folio *folio, struct uv_cb_header *uvcb);
 int uv_convert_from_secure(unsigned long paddr);
 int uv_convert_from_secure_folio(struct folio *folio);
+void *uv_alloc_stor_var(unsigned long size);
+void uv_free_stor_var(void *stor_var);
 
 void setup_uv(void);
 

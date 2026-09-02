@@ -18,7 +18,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/spi/spi.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
@@ -188,8 +187,8 @@ static irqreturn_t max1118_trigger_handler(int irq, void *p)
 		adc->scan.channels[i] = ret;
 		i++;
 	}
-	iio_push_to_buffers_with_timestamp(indio_dev, &adc->scan,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, &adc->scan, sizeof(adc->scan),
+				    iio_get_time_ns(indio_dev));
 out:
 	mutex_unlock(&adc->lock);
 
@@ -257,9 +256,9 @@ static int max1118_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id max1118_id[] = {
-	{ "max1117", max1117 },
-	{ "max1118", max1118 },
-	{ "max1119", max1119 },
+	{ .name = "max1117", .driver_data = max1117 },
+	{ .name = "max1118", .driver_data = max1118 },
+	{ .name = "max1119", .driver_data = max1119 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, max1118_id);

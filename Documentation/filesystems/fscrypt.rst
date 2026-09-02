@@ -70,7 +70,7 @@ Online attacks
 --------------
 
 fscrypt (and storage encryption in general) can only provide limited
-protection, if any at all, against online attacks.  In detail:
+protection against online attacks.  In detail:
 
 Side-channel attacks
 ~~~~~~~~~~~~~~~~~~~~
@@ -99,16 +99,23 @@ Therefore, any encryption-specific access control checks would merely
 be enforced by kernel *code* and therefore would be largely redundant
 with the wide variety of access control mechanisms already available.)
 
-Kernel memory compromise
-~~~~~~~~~~~~~~~~~~~~~~~~
+Read-only kernel memory compromise
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-An attacker who compromises the system enough to read from arbitrary
-memory, e.g. by mounting a physical attack or by exploiting a kernel
-security vulnerability, can compromise all encryption keys that are
-currently in use.
+Unless `hardware-wrapped keys`_ are used, an attacker who gains the
+ability to read from arbitrary kernel memory, e.g. by mounting a
+physical attack or by exploiting a kernel security vulnerability, can
+compromise all fscrypt keys that are currently in-use.  This also
+extends to cold boot attacks; if the system is suddenly powered off,
+keys the system was using may remain in memory for a short time.
 
-However, fscrypt allows encryption keys to be removed from the kernel,
-which may protect them from later compromise.
+However, if hardware-wrapped keys are used, then the fscrypt master
+keys and file contents encryption keys (but not other types of fscrypt
+subkeys such as filenames encryption keys) are protected from
+compromises of arbitrary kernel memory.
+
+In addition, fscrypt allows encryption keys to be removed from the
+kernel, which may protect them from later compromise.
 
 In more detail, the FS_IOC_REMOVE_ENCRYPTION_KEY ioctl (or the
 FS_IOC_REMOVE_ENCRYPTION_KEY_ALL_USERS ioctl) can wipe a master
@@ -140,9 +147,26 @@ However, these ioctls have some limitations:
   were wiped.  To partially solve this, you can add init_on_free=1 to
   your kernel command line.  However, this has a performance cost.
 
-- Secret keys might still exist in CPU registers, in crypto
-  accelerator hardware (if used by the crypto API to implement any of
-  the algorithms), or in other places not explicitly considered here.
+- Secret keys might still exist in CPU registers or in other places
+  not explicitly considered here.
+
+Full system compromise
+~~~~~~~~~~~~~~~~~~~~~~
+
+An attacker who gains "root" access and/or the ability to execute
+arbitrary kernel code can freely exfiltrate data that is protected by
+any in-use fscrypt keys.  Thus, usually fscrypt provides no meaningful
+protection in this scenario.  (Data that is protected by a key that is
+absent throughout the entire attack remains protected, modulo the
+limitations of key removal mentioned above in the case where the key
+was removed prior to the attack.)
+
+However, if `hardware-wrapped keys`_ are used, such attackers will be
+unable to exfiltrate the master keys or file contents keys in a form
+that will be usable after the system is powered off.  This may be
+useful if the attacker is significantly time-limited and/or
+bandwidth-limited, so they can only exfiltrate some data and need to
+rely on a later offline attack to exfiltrate the rest of it.
 
 Limitations of v1 policies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -164,11 +188,15 @@ attacks:
 - Non-root users cannot securely remove encryption keys.
 
 All the above problems are fixed with v2 encryption policies.  For
-this reason among others, it is recommended to use v2 encryption
-policies on all new encrypted directories.
+this reason among others, v1 encryption policies are deprecated.  Use
+v2 encryption policies on all new encrypted directories.
 
 Key hierarchy
 =============
+
+Note: this section assumes the use of raw keys rather than
+hardware-wrapped keys.  The use of hardware-wrapped keys modifies the
+key hierarchy slightly.  For details, see `Hardware-wrapped keys`_.
 
 Master Keys
 -----------
@@ -277,7 +305,8 @@ included in the IV.  Moreover:
 
 - For v2 encryption policies, the encryption is done with a per-mode
   key derived using the KDF.  Users may use the same master key for
-  other v2 encryption policies.
+  other v2 encryption policies.  However, using a distinct master key
+  for each policy is still the best practice and normal usage.
 
 IV_INO_LBLK_64 policies
 -----------------------
@@ -307,6 +336,9 @@ compliant with the eMMC v5.2 standard, which supports only 32 IV bits
 per I/O request and may have only a small number of keyslots.  This
 format results in some level of IV reuse, so it should only be used
 when necessary due to hardware limitations.
+
+IV_INO_LBLK_32 is supported only when the filesystem block size is
+equal to the page size.
 
 Key identifiers
 ---------------
@@ -377,9 +409,12 @@ the work is done by XChaCha12, which is much faster than AES when AES
 acceleration is unavailable.  For more information about Adiantum, see
 `the Adiantum paper <https://eprint.iacr.org/2018/720.pdf>`_.
 
-The (AES-128-CBC-ESSIV, AES-128-CBC-CTS) pair exists only to support
-systems whose only form of AES acceleration is an off-CPU crypto
-accelerator such as CAAM or CESA that does not support XTS.
+The (AES-128-CBC-ESSIV, AES-128-CBC-CTS) pair was added to try to
+provide a more efficient option for systems that lack AES instructions
+in the CPU but do have a non-inline crypto engine such as CAAM or CESA
+that supports AES-CBC (and not AES-XTS).  This is deprecated.  It has
+been shown that just doing AES on the CPU is actually faster.
+Moreover, Adiantum is faster still and is recommended on such systems.
 
 The remaining mode pairs are the "national pride ciphers":
 
@@ -419,18 +454,11 @@ API, but the filenames mode still does.
         - CONFIG_CRYPTO_HCTR2
     - Recommended:
         - arm64: CONFIG_CRYPTO_AES_ARM64_CE_BLK
-        - arm64: CONFIG_CRYPTO_POLYVAL_ARM64_CE
         - x86: CONFIG_CRYPTO_AES_NI_INTEL
-        - x86: CONFIG_CRYPTO_POLYVAL_CLMUL_NI
 
 - Adiantum
     - Mandatory:
         - CONFIG_CRYPTO_ADIANTUM
-    - Recommended:
-        - arm32: CONFIG_CRYPTO_NHPOLY1305_NEON
-        - arm64: CONFIG_CRYPTO_NHPOLY1305_NEON
-        - x86: CONFIG_CRYPTO_NHPOLY1305_SSE2
-        - x86: CONFIG_CRYPTO_NHPOLY1305_AVX2
 
 - AES-128-CBC-ESSIV and AES-128-CBC-CTS:
     - Mandatory:
@@ -438,14 +466,6 @@ API, but the filenames mode still does.
         - CONFIG_CRYPTO_SHA256 or another SHA-256 implementation
     - Recommended:
         - AES-CBC acceleration
-
-fscrypt also uses HMAC-SHA512 for key derivation, so enabling SHA-512
-acceleration is recommended:
-
-- SHA-512
-    - Recommended:
-        - arm64: CONFIG_CRYPTO_SHA512_ARM64_CE
-        - x86: CONFIG_CRYPTO_SHA512_SSSE3
 
 Contents encryption
 -------------------
@@ -585,7 +605,9 @@ This structure must be initialized as follows:
   struct fscrypt_policy_v1 is used or FSCRYPT_POLICY_V2 (2) if
   struct fscrypt_policy_v2 is used. (Note: we refer to the original
   policy version as "v1", though its version code is really 0.)
-  For new encrypted directories, use v2 policies.
+  For new encrypted directories, use v2 policies, which are supported
+  since Linux v5.4.  v1 policies are deprecated and have several
+  usability and security problems.
 
 - ``contents_encryption_mode`` and ``filenames_encryption_mode`` must
   be set to constants from ``<linux/fscrypt.h>`` which identify the
@@ -720,17 +742,6 @@ FS_IOC_SET_ENCRYPTION_POLICY can fail with the following errors:
 Getting an encryption policy
 ----------------------------
 
-Two ioctls are available to get a file's encryption policy:
-
-- `FS_IOC_GET_ENCRYPTION_POLICY_EX`_
-- `FS_IOC_GET_ENCRYPTION_POLICY`_
-
-The extended (_EX) version of the ioctl is more general and is
-recommended to use when possible.  However, on older kernels only the
-original ioctl is available.  Applications should try the extended
-version, and if it fails with ENOTTY fall back to the original
-version.
-
 FS_IOC_GET_ENCRYPTION_POLICY_EX
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -764,7 +775,6 @@ FS_IOC_GET_ENCRYPTION_POLICY_EX can fail with the following errors:
 - ``ENODATA``: the file is not encrypted
 - ``ENOTTY``: this type of filesystem does not implement encryption,
   or this kernel is too old to support FS_IOC_GET_ENCRYPTION_POLICY_EX
-  (try FS_IOC_GET_ENCRYPTION_POLICY instead)
 - ``EOPNOTSUPP``: the kernel was not configured with encryption
   support for this filesystem, or the filesystem superblock has not
   had encryption enabled on it
@@ -780,12 +790,13 @@ check for STATX_ATTR_ENCRYPTED in stx_attributes.
 FS_IOC_GET_ENCRYPTION_POLICY
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The FS_IOC_GET_ENCRYPTION_POLICY ioctl can also retrieve the
-encryption policy, if any, for a directory or regular file.  However,
-unlike `FS_IOC_GET_ENCRYPTION_POLICY_EX`_,
-FS_IOC_GET_ENCRYPTION_POLICY only supports the original policy
-version.  It takes in a pointer directly to struct fscrypt_policy_v1
-rather than struct fscrypt_get_policy_ex_arg.
+The FS_IOC_GET_ENCRYPTION_POLICY ioctl is deprecated.  It supports
+only v1 encryption policies, which themselves are deprecated.  Use
+`FS_IOC_GET_ENCRYPTION_POLICY_EX`_ instead.
+
+FS_IOC_GET_ENCRYPTION_POLICY retrieves the encryption policy for a
+directory or regular file, but only if it uses a v1 policy.  It takes
+in a pointer directly to struct fscrypt_policy_v1.
 
 The error codes for FS_IOC_GET_ENCRYPTION_POLICY are the same as those
 for FS_IOC_GET_ENCRYPTION_POLICY_EX, except that
@@ -832,7 +843,9 @@ a pointer to struct fscrypt_add_key_arg, defined as follows::
             struct fscrypt_key_specifier key_spec;
             __u32 raw_size;
             __u32 key_id;
-            __u32 __reserved[8];
+    #define FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED 0x00000001
+            __u32 flags;
+            __u32 __reserved[7];
             __u8 raw[];
     };
 
@@ -851,7 +864,7 @@ a pointer to struct fscrypt_add_key_arg, defined as follows::
 
     struct fscrypt_provisioning_key_payload {
             __u32 type;
-            __u32 __reserved;
+            __u32 flags;
             __u8 raw[];
     };
 
@@ -866,6 +879,10 @@ as follows:
   To add this type of key, the calling process must have the
   CAP_SYS_ADMIN capability in the initial user namespace.
 
+  (Note that v1 encryption policies are deprecated.  The ability to
+  add a key for v1 encryption policies remains only for compatibility
+  with existing encrypted directories.)
+
   Alternatively, if the key is being added for use by v2 encryption
   policies, then ``key_spec.type`` must contain
   FSCRYPT_KEY_SPEC_TYPE_IDENTIFIER, and ``key_spec.u.identifier`` is
@@ -879,24 +896,32 @@ as follows:
   Alternatively, if ``key_id`` is nonzero, this field must be 0, since
   in that case the size is implied by the specified Linux keyring key.
 
-- ``key_id`` is 0 if the raw key is given directly in the ``raw``
-  field.  Otherwise ``key_id`` is the ID of a Linux keyring key of
-  type "fscrypt-provisioning" whose payload is
-  struct fscrypt_provisioning_key_payload whose ``raw`` field contains
-  the raw key and whose ``type`` field matches ``key_spec.type``.
-  Since ``raw`` is variable-length, the total size of this key's
-  payload must be ``sizeof(struct fscrypt_provisioning_key_payload)``
-  plus the raw key size.  The process must have Search permission on
-  this key.
+- ``key_id`` is 0 if the key is given directly in the ``raw`` field.
+  Otherwise ``key_id`` is the ID of a Linux keyring key of type
+  "fscrypt-provisioning" whose payload is struct
+  fscrypt_provisioning_key_payload whose ``raw`` field contains the
+  key, whose ``type`` field matches ``key_spec.type``, and whose
+  ``flags`` field matches ``flags``.  Since ``raw`` is
+  variable-length, the total size of this key's payload must be
+  ``sizeof(struct fscrypt_provisioning_key_payload)`` plus the number
+  of key bytes.  The process must have Search permission on this key.
 
-  Most users should leave this 0 and specify the raw key directly.
-  The support for specifying a Linux keyring key is intended mainly to
+  Most users should leave this 0 and specify the key directly.  The
+  support for specifying a Linux keyring key is intended mainly to
   allow re-adding keys after a filesystem is unmounted and re-mounted,
-  without having to store the raw keys in userspace memory.
+  without having to store the keys in userspace memory.
+
+- ``flags`` contains optional flags from ``<linux/fscrypt.h>``:
+
+  - FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED: This denotes that the key is a
+    hardware-wrapped key.  See `Hardware-wrapped keys`_.  This flag
+    can't be used if FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR is used.
 
 - ``raw`` is a variable-length field which must contain the actual
   key, ``raw_size`` bytes long.  Alternatively, if ``key_id`` is
-  nonzero, then this field is unused.
+  nonzero, then this field is unused.  Note that despite being named
+  ``raw``, if FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED is specified then it
+  will contain a wrapped key, not a raw key.
 
 For v2 policy keys, the kernel keeps track of which user (identified
 by effective user ID) added the key, and only allows the key to be
@@ -908,8 +933,8 @@ prevent that other user from unexpectedly removing it.  Therefore,
 FS_IOC_ADD_ENCRYPTION_KEY may also be used to add a v2 policy key
 *again*, even if it's already added by other user(s).  In this case,
 FS_IOC_ADD_ENCRYPTION_KEY will just install a claim to the key for the
-current user, rather than actually add the key again (but the raw key
-must still be provided, as a proof of knowledge).
+current user, rather than actually add the key again (but the key must
+still be provided, as a proof of knowledge).
 
 FS_IOC_ADD_ENCRYPTION_KEY returns 0 if either the key or a claim to
 the key was either added or already exists.
@@ -918,20 +943,23 @@ FS_IOC_ADD_ENCRYPTION_KEY can fail with the following errors:
 
 - ``EACCES``: FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR was specified, but the
   caller does not have the CAP_SYS_ADMIN capability in the initial
-  user namespace; or the raw key was specified by Linux key ID but the
+  user namespace; or the key was specified by Linux key ID but the
   process lacks Search permission on the key.
+- ``EBADMSG``: invalid hardware-wrapped key
 - ``EDQUOT``: the key quota for this user would be exceeded by adding
   the key
 - ``EINVAL``: invalid key size or key specifier type, or reserved bits
   were set
-- ``EKEYREJECTED``: the raw key was specified by Linux key ID, but the
-  key has the wrong type
-- ``ENOKEY``: the raw key was specified by Linux key ID, but no key
-  exists with that ID
+- ``EKEYREJECTED``: the key was specified by Linux key ID, but the key
+  has the wrong type
+- ``ENOKEY``: the key was specified by Linux key ID, but no key exists
+  with that ID
 - ``ENOTTY``: this type of filesystem does not implement encryption
 - ``EOPNOTSUPP``: the kernel was not configured with encryption
   support for this filesystem, or the filesystem superblock has not
-  had encryption enabled on it
+  had encryption enabled on it; or a hardware wrapped key was specified
+  but the filesystem does not support inline encryption or the hardware
+  does not support hardware-wrapped keys
 
 Legacy method
 ~~~~~~~~~~~~~
@@ -994,9 +1022,8 @@ or removed by non-root users.
 These ioctls don't work on keys that were added via the legacy
 process-subscribed keyrings mechanism.
 
-Before using these ioctls, read the `Kernel memory compromise`_
-section for a discussion of the security goals and limitations of
-these ioctls.
+Before using these ioctls, read the `Online attacks`_ section for a
+discussion of the security goals and limitations of these ioctls.
 
 FS_IOC_REMOVE_ENCRYPTION_KEY
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1210,6 +1237,10 @@ astute users may notice some differences in behavior:
 
 - DAX (Direct Access) is not supported on encrypted files.
 
+- Encrypted files cannot be used directly as swap files.  To swap to
+  an encrypted file, set up a loopback device on top of it.
+  Alternatively, encrypted swap can use a dm-crypt device.
+
 - The maximum length of an encrypted symlink is 2 bytes shorter than
   the maximum length of an unencrypted symlink.  For example, on an
   EXT4 filesystem with a 4K block size, unencrypted symlinks can be up
@@ -1285,46 +1316,95 @@ this by validating all top-level encryption policies prior to access.
 Inline encryption support
 =========================
 
-By default, fscrypt uses the kernel crypto API for all cryptographic
-operations (other than HKDF, which fscrypt partially implements
-itself).  The kernel crypto API supports hardware crypto accelerators,
-but only ones that work in the traditional way where all inputs and
-outputs (e.g. plaintexts and ciphertexts) are in memory.  fscrypt can
-take advantage of such hardware, but the traditional acceleration
-model isn't particularly efficient and fscrypt hasn't been optimized
-for it.
-
-Instead, many newer systems (especially mobile SoCs) have *inline
-encryption hardware* that can encrypt/decrypt data while it is on its
-way to/from the storage device.  Linux supports inline encryption
-through a set of extensions to the block layer called *blk-crypto*.
-blk-crypto allows filesystems to attach encryption contexts to bios
-(I/O requests) to specify how the data will be encrypted or decrypted
-in-line.  For more information about blk-crypto, see
-:ref:`Documentation/block/inline-encryption.rst <inline_encryption>`.
+Many newer systems (especially mobile SoCs) have *inline encryption
+hardware* that can encrypt/decrypt data while it is on its way to/from
+the storage device.
 
 On supported filesystems (currently ext4 and f2fs), fscrypt can use
-blk-crypto instead of the kernel crypto API to encrypt/decrypt file
-contents.  To enable this, set CONFIG_FS_ENCRYPTION_INLINE_CRYPT=y in
-the kernel configuration, and specify the "inlinecrypt" mount option
-when mounting the filesystem.
+inline encryption hardware instead of the CPU to encrypt/decrypt file
+contents.  To enable this, specify the "inlinecrypt" mount option when
+mounting the filesystem.
 
-Note that the "inlinecrypt" mount option just specifies to use inline
-encryption when possible; it doesn't force its use.  fscrypt will
-still fall back to using the kernel crypto API on files where the
-inline encryption hardware doesn't have the needed crypto capabilities
-(e.g. support for the needed encryption algorithm and data unit size)
-and where blk-crypto-fallback is unusable.  (For blk-crypto-fallback
-to be usable, it must be enabled in the kernel configuration with
-CONFIG_BLK_INLINE_ENCRYPTION_FALLBACK=y.)
+This causes the filesystem to use inline encryption hardware whenever
+possible, falling back to the CPU only if such hardware is absent or
+doesn't provide the needed crypto capabilities.
 
-Currently fscrypt always uses the filesystem block size (which is
-usually 4096 bytes) as the data unit size.  Therefore, it can only use
-inline encryption hardware that supports that data unit size.
+For more information about the kernel's support for inline encryption
+hardware, see :ref:`Documentation/block/inline-encryption.rst
+<inline_encryption>`.
 
 Inline encryption doesn't affect the ciphertext or other aspects of
 the on-disk format, so users may freely switch back and forth between
-using "inlinecrypt" and not using "inlinecrypt".
+using "inlinecrypt" and not using "inlinecrypt".  An exception is that
+files that are protected by a hardware-wrapped key can only be
+encrypted/decrypted by the inline encryption hardware and therefore
+can only be accessed when the "inlinecrypt" mount option is used.  For
+more information about hardware-wrapped keys, see below.
+
+Hardware-wrapped keys
+---------------------
+
+fscrypt supports using *hardware-wrapped keys* when the inline
+encryption hardware supports it.  Such keys are only present in kernel
+memory in wrapped (encrypted) form; they can only be unwrapped
+(decrypted) by the inline encryption hardware and are temporally bound
+to the current boot.  This prevents the keys from being compromised if
+kernel memory is leaked.  This is done without limiting the number of
+keys that can be used and while still allowing the execution of
+cryptographic tasks that are tied to the same key but can't use inline
+encryption hardware, e.g. filenames encryption.
+
+Note that hardware-wrapped keys aren't specific to fscrypt; they are a
+block layer feature (part of *blk-crypto*).  For more details about
+hardware-wrapped keys, see the block layer documentation at
+:ref:`Documentation/block/inline-encryption.rst
+<hardware_wrapped_keys>`.  The rest of this section just focuses on
+the details of how fscrypt can use hardware-wrapped keys.
+
+fscrypt supports hardware-wrapped keys by allowing the fscrypt master
+keys to be hardware-wrapped keys as an alternative to raw keys.  To
+add a hardware-wrapped key with `FS_IOC_ADD_ENCRYPTION_KEY`_,
+userspace must specify FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED in the
+``flags`` field of struct fscrypt_add_key_arg and also in the
+``flags`` field of struct fscrypt_provisioning_key_payload when
+applicable.  The key must be in ephemerally-wrapped form, not
+long-term wrapped form.
+
+Some limitations apply.  First, files protected by a hardware-wrapped
+key are tied to the system's inline encryption hardware.  Therefore
+they can only be accessed when the "inlinecrypt" mount option is used,
+and they can't be included in portable filesystem images.  Second,
+currently the hardware-wrapped key support is only compatible with
+`IV_INO_LBLK_64 policies`_ and `IV_INO_LBLK_32 policies`_, as it
+assumes that there is just one file contents encryption key per
+fscrypt master key rather than one per file.  Future work may address
+this limitation by passing per-file nonces down the storage stack to
+allow the hardware to derive per-file keys.
+
+Implementation-wise, to encrypt/decrypt the contents of files that are
+protected by a hardware-wrapped key, fscrypt uses blk-crypto,
+attaching the hardware-wrapped key to the bio crypt contexts.  As is
+the case with raw keys, the block layer will program the key into a
+keyslot when it isn't already in one.  However, when programming a
+hardware-wrapped key, the hardware doesn't program the given key
+directly into a keyslot but rather unwraps it (using the hardware's
+ephemeral wrapping key) and derives the inline encryption key from it.
+The inline encryption key is the key that actually gets programmed
+into a keyslot, and it is never exposed to software.
+
+However, fscrypt doesn't just do file contents encryption; it also
+uses its master keys to derive filenames encryption keys, key
+identifiers, and sometimes some more obscure types of subkeys such as
+dirhash keys.  So even with file contents encryption out of the
+picture, fscrypt still needs a raw key to work with.  To get such a
+key from a hardware-wrapped key, fscrypt asks the inline encryption
+hardware to derive a cryptographically isolated "software secret" from
+the hardware-wrapped key.  fscrypt uses this "software secret" to key
+its KDF to derive all subkeys other than file contents keys.
+
+Note that this implies that the hardware-wrapped key feature only
+protects the file contents encryption keys.  It doesn't protect other
+fscrypt subkeys such as filenames encryption keys.
 
 Direct I/O support
 ==================
@@ -1333,10 +1413,8 @@ For direct I/O on an encrypted file to work, the following conditions
 must be met (in addition to the conditions for direct I/O on an
 unencrypted file):
 
-* The file must be using inline encryption.  Usually this means that
-  the filesystem must be mounted with ``-o inlinecrypt`` and inline
-  encryption hardware must be present.  However, a software fallback
-  is also available.  For details, see `Inline encryption support`_.
+* The filesystem must be block-based.  (Before Linux v7.3, the
+  filesystem also needed to be mounted with ``-o inlinecrypt``.)
 
 * The I/O request must be fully aligned to the filesystem block size.
   This means that the file position the I/O is targeting, the lengths
@@ -1397,25 +1475,43 @@ keys`_ and `DIRECT_KEY policies`_.
 Data path changes
 -----------------
 
-When inline encryption is used, filesystems just need to associate
-encryption contexts with bios to specify how the block layer or the
-inline encryption hardware will encrypt/decrypt the file contents.
+The block-based filesystems that support fscrypt, such as ext4 and
+f2fs, use blk-crypto (:ref:`inline_encryption`) to implement file
+contents encryption and decryption.  With blk-crypto, the filesystem
+assigns an encryption context to each I/O request it issues to the
+contents of an encrypted file.  The encryption (for writes) or
+decryption (for reads) is handled by the block layer transparently to
+the filesystem, using either the CPU or inline encryption hardware.
 
-When inline encryption isn't used, filesystems must encrypt/decrypt
-the file contents themselves, as described below:
+Non-block-based filesystems can't use blk-crypto, so they make the
+calls to the cryptographic algorithms at the filesystem layer instead.
 
-For the read path (->read_folio()) of regular files, filesystems can
-read the ciphertext into the page cache and decrypt it in-place.  The
-folio lock must be held until decryption has finished, to prevent the
-folio from becoming visible to userspace prematurely.
+Regardless of the layer in which they occur (blk-crypto-fallback or the
+filesystem), for CPU-based encryption and decryption of file contents:
 
-For the write path (->writepage()) of regular files, filesystems
-cannot encrypt data in-place in the page cache, since the cached
-plaintext must be preserved.  Instead, filesystems must encrypt into a
-temporary buffer or "bounce page", then write out the temporary
-buffer.  Some filesystems, such as UBIFS, already use temporary
-buffers regardless of encryption.  Other filesystems, such as ext4 and
-F2FS, have to allocate bounce pages specially for encryption.
+- For reads, the ciphertext data is read from the storage backend
+  (block device, network, UBI device, etc.) into the destination
+  buffers, then decrypted in-place.  The destination buffers are
+  pagecache folios for buffered reads, or application-provided buffers
+  for direct reads.  In either case, the filesystem reports success
+  only after decryption has successfully completed.
+
+- For writes, the plaintext data is encrypted from the source buffers
+  (which cannot be modified) into bounce buffers.  Then, the
+  ciphertext in the bounce buffers is written to the storage backend.
+
+  The source buffers are usually pagecache folios for buffered writes,
+  or application-provided buffers for direct writes.  There are also
+  some cases (all files on UBIFS, and compressed files on f2fs) where
+  the filesystem already uses bounce buffers for writes for other
+  reasons; in these cases the source plaintext data is already in
+  bounce buffers.  UBIFS optimizes this case by encrypting the data
+  in-place in its existing bounce buffers.
+
+When inline encryption hardware is used instead of the CPU, reads from
+the storage backend logically return plaintext data, and writes accept
+plaintext data.  In that case the flow is simplified: there's no
+scheduling of decryption work, and no bounce buffers are used.
 
 Filename hashing and encoding
 -----------------------------
@@ -1463,14 +1559,11 @@ Tests
 
 To test fscrypt, use xfstests, which is Linux's de facto standard
 filesystem test suite.  First, run all the tests in the "encrypt"
-group on the relevant filesystem(s).  One can also run the tests
-with the 'inlinecrypt' mount option to test the implementation for
-inline encryption support.  For example, to test ext4 and
+group on the relevant filesystem(s).  For example, to test ext4 and
 f2fs encryption using `kvm-xfstests
 <https://github.com/tytso/xfstests-bld/blob/master/Documentation/kvm-quickstart.md>`_::
 
     kvm-xfstests -c ext4,f2fs -g encrypt
-    kvm-xfstests -c ext4,f2fs -g encrypt -m inlinecrypt
 
 UBIFS encryption can also be tested this way, but it should be done in
 a separate command, and it takes some time for kvm-xfstests to set up
@@ -1492,7 +1585,6 @@ This tests the encrypted I/O paths more thoroughly.  To do this with
 kvm-xfstests, use the "encrypt" filesystem configuration::
 
     kvm-xfstests -c ext4/encrypt,f2fs/encrypt -g auto
-    kvm-xfstests -c ext4/encrypt,f2fs/encrypt -g auto -m inlinecrypt
 
 Because this runs many more tests than "-g encrypt" does, it takes
 much longer to run; so also consider using `gce-xfstests
@@ -1500,4 +1592,9 @@ much longer to run; so also consider using `gce-xfstests
 instead of kvm-xfstests::
 
     gce-xfstests -c ext4/encrypt,f2fs/encrypt -g auto
-    gce-xfstests -c ext4/encrypt,f2fs/encrypt -g auto -m inlinecrypt
+
+To test inline encryption hardware on a platform that supports such
+hardware, run xfstests directly with the ``inlinecrypt`` mount option
+enabled.  For example::
+
+    EXT_MOUNT_OPTIONS="-o inlinecrypt" ./check -g encrypt

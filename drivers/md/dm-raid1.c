@@ -103,7 +103,7 @@ static void wakeup_mirrord(void *context)
 
 static void delayed_wake_fn(struct timer_list *t)
 {
-	struct mirror_set *ms = from_timer(ms, t, timer);
+	struct mirror_set *ms = timer_container_of(ms, t, timer);
 
 	clear_bit(0, &ms->timer_pending);
 	wakeup_mirrord(ms);
@@ -133,10 +133,9 @@ static void queue_bio(struct mirror_set *ms, struct bio *bio, int rw)
 	spin_lock_irqsave(&ms->lock, flags);
 	should_wake = !(bl->head);
 	bio_list_add(bl, bio);
-	spin_unlock_irqrestore(&ms->lock, flags);
-
 	if (should_wake)
 		wakeup_mirrord(ms);
+	spin_unlock_irqrestore(&ms->lock, flags);
 }
 
 static void dispatch_bios(void *context, struct bio_list *bio_list)
@@ -259,7 +258,7 @@ out:
 static int mirror_flush(struct dm_target *ti)
 {
 	struct mirror_set *ms = ti->private;
-	unsigned long error_bits;
+	unsigned long error_bits, unsup_bits;
 
 	unsigned int i;
 	struct dm_io_region io[MAX_NR_MIRRORS];
@@ -278,8 +277,8 @@ static int mirror_flush(struct dm_target *ti)
 	}
 
 	error_bits = -1;
-	dm_io(&io_req, ms->nr_mirrors, io, &error_bits, IOPRIO_DEFAULT);
-	if (unlikely(error_bits != 0)) {
+	dm_io(&io_req, ms->nr_mirrors, io, &error_bits, &unsup_bits, IOPRIO_DEFAULT);
+	if (unlikely((error_bits | unsup_bits) != 0)) {
 		for (i = 0; i < ms->nr_mirrors; i++)
 			if (test_bit(i, &error_bits))
 				fail_mirror(ms->mirror + i,
@@ -512,7 +511,7 @@ static void hold_bio(struct mirror_set *ms, struct bio *bio)
  * Reads
  *---------------------------------------------------------------
  */
-static void read_callback(unsigned long error, void *context)
+static void read_callback(unsigned long error, unsigned long unsup, void *context)
 {
 	struct bio *bio = context;
 	struct mirror *m;
@@ -521,6 +520,8 @@ static void read_callback(unsigned long error, void *context)
 	bio_set_m(bio, NULL);
 
 	if (likely(!error)) {
+		if (unlikely(unsup != 0))
+			bio->bi_status = BLK_STS_INVAL;
 		bio_endio(bio);
 		return;
 	}
@@ -554,7 +555,7 @@ static void read_async_bio(struct mirror *m, struct bio *bio)
 
 	map_region(&io, m, bio);
 	bio_set_m(bio, m);
-	BUG_ON(dm_io(&io_req, 1, &io, NULL, IOPRIO_DEFAULT));
+	BUG_ON(dm_io(&io_req, 1, &io, NULL, NULL, IOPRIO_DEFAULT));
 }
 
 static inline int region_in_sync(struct mirror_set *ms, region_t region,
@@ -601,7 +602,7 @@ static void do_reads(struct mirror_set *ms, struct bio_list *reads)
  * NOSYNC:	increment pending, just write to the default mirror
  *---------------------------------------------------------------------
  */
-static void write_callback(unsigned long error, void *context)
+static void write_callback(unsigned long error, unsigned long unsup, void *context)
 {
 	unsigned int i;
 	struct bio *bio = context;
@@ -618,7 +619,7 @@ static void write_callback(unsigned long error, void *context)
 	 * This way we handle both writes to SYNC and NOSYNC
 	 * regions with the same code.
 	 */
-	if (likely(!error)) {
+	if (likely(!(error | unsup))) {
 		bio_endio(bio);
 		return;
 	}
@@ -629,6 +630,12 @@ static void write_callback(unsigned long error, void *context)
 	 */
 	if (bio_op(bio) == REQ_OP_DISCARD) {
 		bio->bi_status = BLK_STS_NOTSUPP;
+		bio_endio(bio);
+		return;
+	}
+
+	if (!error && unsup) {
+		bio->bi_status = BLK_STS_INVAL;
 		bio_endio(bio);
 		return;
 	}
@@ -646,9 +653,9 @@ static void write_callback(unsigned long error, void *context)
 	if (!ms->failures.head)
 		should_wake = 1;
 	bio_list_add(&ms->failures, bio);
-	spin_unlock_irqrestore(&ms->lock, flags);
 	if (should_wake)
 		wakeup_mirrord(ms);
+	spin_unlock_irqrestore(&ms->lock, flags);
 }
 
 static void do_write(struct mirror_set *ms, struct bio *bio)
@@ -681,7 +688,7 @@ static void do_write(struct mirror_set *ms, struct bio *bio)
 	 */
 	bio_set_m(bio, get_default_mirror(ms));
 
-	BUG_ON(dm_io(&io_req, ms->nr_mirrors, io, NULL, IOPRIO_DEFAULT));
+	BUG_ON(dm_io(&io_req, ms->nr_mirrors, io, NULL, NULL, IOPRIO_DEFAULT));
 }
 
 static void do_writes(struct mirror_set *ms, struct bio_list *writes)
@@ -891,7 +898,7 @@ static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 					struct dm_dirty_log *dl)
 {
 	struct mirror_set *ms =
-		kzalloc(struct_size(ms, mirror, nr_mirrors), GFP_KERNEL);
+		kzalloc_flex(*ms, mirror, nr_mirrors);
 
 	if (!ms) {
 		ti->error = "Cannot allocate mirror context";
@@ -994,12 +1001,12 @@ static struct dm_dirty_log *create_dirty_log(struct dm_target *ti,
 		return NULL;
 	}
 
-	*args_used = 2 + param_count;
-
-	if (argc < *args_used) {
+	if (param_count > argc - 2) {
 		ti->error = "Insufficient mirror log arguments";
 		return NULL;
 	}
+
+	*args_used = 2 + param_count;
 
 	dl = dm_dirty_log_create(argv[0], ti, mirror_flush, param_count,
 				 argv + 2);
@@ -1129,7 +1136,8 @@ static int mirror_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->num_discard_bios = 1;
 	ti->per_io_data_size = sizeof(struct dm_raid1_bio_record);
 
-	ms->kmirrord_wq = alloc_workqueue("kmirrord", WQ_MEM_RECLAIM, 0);
+	ms->kmirrord_wq = alloc_workqueue("kmirrord",
+					  WQ_MEM_RECLAIM | WQ_PERCPU, 0);
 	if (!ms->kmirrord_wq) {
 		DMERR("couldn't start kmirrord");
 		r = -ENOMEM;
@@ -1262,7 +1270,7 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 		return DM_ENDIO_DONE;
 	}
 
-	if (*error == BLK_STS_NOTSUPP)
+	if (*error == BLK_STS_NOTSUPP || *error == BLK_STS_INVAL)
 		goto out;
 
 	if (bio->bi_opf & REQ_RAHEAD)
@@ -1501,7 +1509,7 @@ static int __init dm_mirror_init(void)
 {
 	int r;
 
-	dm_raid1_wq = alloc_workqueue("dm_raid1_wq", 0, 0);
+	dm_raid1_wq = alloc_workqueue("dm_raid1_wq", WQ_PERCPU, 0);
 	if (!dm_raid1_wq) {
 		DMERR("Failed to alloc workqueue");
 		return -ENOMEM;

@@ -1159,7 +1159,7 @@
 							};
 						};
 
-						asrc_out6_port:	port@c {
+						asrc_out6_port: port@c {
 							reg = <0xc>;
 
 							asrc_out6_ep: endpoint {
@@ -2172,6 +2172,12 @@
 				<&{/bus@0/padctl@3520000/pads/usb2/lanes/usb2-2}>,
 				<&{/bus@0/padctl@3520000/pads/usb3/lanes/usb3-2}>;
 			phy-names = "usb2-1", "usb2-2", "usb3-2";
+		};
+
+		cec@3960000 {
+			status = "okay";
+
+			hdmi-phandle = <&sor1>;
 		};
 
 		host1x@13e00000 {

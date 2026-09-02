@@ -30,7 +30,7 @@ SECTIONS
 		*(.data .data.* .gnu.linkonce.d.*)
 		*(.dynbss)
 		*(.bss .bss.* .gnu.linkonce.b.*)
-	}
+	}						:text
 
 	.note		: { *(.note.*) }		:text	:note
 
@@ -45,9 +45,11 @@ SECTIONS
 	.text		: { *(.text .text.*) }		:text
 
 	. = ALIGN(4);
+	__vdso_alternatives_start = .;
 	.alternative : {
 		*(.alternative)
 	}
+	__vdso_alternatives_end = .;
 }
 
 /*
@@ -79,6 +81,9 @@ VERSION
 		__vdso_flush_icache;
 #ifndef COMPAT_VDSO
 		__vdso_riscv_hwprobe;
+#endif
+#if defined(CONFIG_VDSO_GETRANDOM) && !defined(COMPAT_VDSO)
+		__vdso_getrandom;
 #endif
 	local: *;
 	};

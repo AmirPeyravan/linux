@@ -24,7 +24,6 @@
 #include <linux/iio/triggered_buffer.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
@@ -99,8 +98,8 @@ static irqreturn_t tlc4541_trigger_handler(int irq, void *p)
 	if (ret < 0)
 		goto done;
 
-	iio_push_to_buffers_with_timestamp(indio_dev, st->rx_buf,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, st->rx_buf, sizeof(st->rx_buf),
+				    iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -241,8 +240,8 @@ static const struct of_device_id tlc4541_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, tlc4541_dt_ids);
 
 static const struct spi_device_id tlc4541_id[] = {
-	{ "tlc3541", TLC3541 },
-	{ "tlc4541", TLC4541 },
+	{ .name = "tlc3541", .driver_data = TLC3541 },
+	{ .name = "tlc4541", .driver_data = TLC4541 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, tlc4541_id);

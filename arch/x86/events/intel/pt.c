@@ -17,13 +17,15 @@
 #include <linux/limits.h>
 #include <linux/slab.h>
 #include <linux/device.h>
+#include <linux/kvm_types.h>
 
-#include <asm/cpuid.h>
+#include <asm/cpuid/api.h>
 #include <asm/perf_event.h>
 #include <asm/insn.h>
 #include <asm/io.h>
 #include <asm/intel_pt.h>
 #include <asm/cpu_device_id.h>
+#include <asm/msr.h>
 
 #include "../perf_event.h"
 #include "pt.h"
@@ -81,13 +83,13 @@ u32 intel_pt_validate_cap(u32 *caps, enum pt_capabilities capability)
 
 	return (c & cd->mask) >> shift;
 }
-EXPORT_SYMBOL_GPL(intel_pt_validate_cap);
+EXPORT_SYMBOL_FOR_KVM(intel_pt_validate_cap);
 
 u32 intel_pt_validate_hw_cap(enum pt_capabilities cap)
 {
 	return intel_pt_validate_cap(pt_pmu.caps, cap);
 }
-EXPORT_SYMBOL_GPL(intel_pt_validate_hw_cap);
+EXPORT_SYMBOL_FOR_KVM(intel_pt_validate_hw_cap);
 
 static ssize_t pt_cap_show(struct device *cdev,
 			   struct device_attribute *attr,
@@ -194,7 +196,7 @@ static int __init pt_pmu_hw_init(void)
 	int ret;
 	long i;
 
-	rdmsrl(MSR_PLATFORM_INFO, reg);
+	rdmsrq(MSR_PLATFORM_INFO, reg);
 	pt_pmu.max_nonturbo_ratio = (reg & 0xff00) >> 8;
 
 	/*
@@ -230,7 +232,7 @@ static int __init pt_pmu_hw_init(void)
 		 * "IA32_VMX_MISC[bit 14]" being 1 means PT can trace
 		 * post-VMXON.
 		 */
-		rdmsrl(MSR_IA32_VMX_MISC, reg);
+		rdmsrq(MSR_IA32_VMX_MISC, reg);
 		if (reg & BIT(14))
 			pt_pmu.vmx = true;
 	}
@@ -426,7 +428,7 @@ static void pt_config_start(struct perf_event *event)
 	if (READ_ONCE(pt->vmx_on))
 		perf_aux_output_flag(&pt->handle, PERF_AUX_FLAG_PARTIAL);
 	else
-		wrmsrl(MSR_IA32_RTIT_CTL, ctl);
+		wrmsrq(MSR_IA32_RTIT_CTL, ctl);
 
 	WRITE_ONCE(event->hw.aux_config, ctl);
 }
@@ -485,12 +487,12 @@ static u64 pt_config_filters(struct perf_event *event)
 
 		/* avoid redundant msr writes */
 		if (pt->filters.filter[range].msr_a != filter->msr_a) {
-			wrmsrl(pt_address_ranges[range].msr_a, filter->msr_a);
+			wrmsrq(pt_address_ranges[range].msr_a, filter->msr_a);
 			pt->filters.filter[range].msr_a = filter->msr_a;
 		}
 
 		if (pt->filters.filter[range].msr_b != filter->msr_b) {
-			wrmsrl(pt_address_ranges[range].msr_b, filter->msr_b);
+			wrmsrq(pt_address_ranges[range].msr_b, filter->msr_b);
 			pt->filters.filter[range].msr_b = filter->msr_b;
 		}
 
@@ -498,6 +500,29 @@ static u64 pt_config_filters(struct perf_event *event)
 	}
 
 	return rtit_ctl;
+}
+
+static void pt_config_enable(struct perf_event *event)
+{
+	struct pt *pt = this_cpu_ptr(&pt_ctx);
+
+	/*
+	 * Allow resume before starting so as not to overwrite a value set by a
+	 * PMI.
+	 */
+	barrier();
+	WRITE_ONCE(pt->resume_allowed, 1);
+	/* Configuration is complete, it is now OK to handle an NMI */
+	barrier();
+	WRITE_ONCE(pt->handle_nmi, 1);
+	barrier();
+	pt_config_start(event);
+	barrier();
+	/*
+	 * Allow pause after starting so its pt_config_stop() doesn't race with
+	 * pt_config_start().
+	 */
+	WRITE_ONCE(pt->pause_allowed, 1);
 }
 
 static void pt_config(struct perf_event *event)
@@ -509,7 +534,7 @@ static void pt_config(struct perf_event *event)
 	/* First round: clear STATUS, in particular the PSB byte counter. */
 	if (!event->hw.aux_config) {
 		perf_event_itrace_started(event);
-		wrmsrl(MSR_IA32_RTIT_STATUS, 0);
+		wrmsrq(MSR_IA32_RTIT_STATUS, 0);
 	}
 
 	reg = pt_config_filters(event);
@@ -539,23 +564,7 @@ static void pt_config(struct perf_event *event)
 
 	event->hw.aux_config = reg;
 
-	/*
-	 * Allow resume before starting so as not to overwrite a value set by a
-	 * PMI.
-	 */
-	barrier();
-	WRITE_ONCE(pt->resume_allowed, 1);
-	/* Configuration is complete, it is now OK to handle an NMI */
-	barrier();
-	WRITE_ONCE(pt->handle_nmi, 1);
-	barrier();
-	pt_config_start(event);
-	barrier();
-	/*
-	 * Allow pause after starting so its pt_config_stop() doesn't race with
-	 * pt_config_start().
-	 */
-	WRITE_ONCE(pt->pause_allowed, 1);
+	pt_config_enable(event);
 }
 
 static void pt_config_stop(struct perf_event *event)
@@ -569,7 +578,7 @@ static void pt_config_stop(struct perf_event *event)
 
 	ctl &= ~RTIT_CTL_TRACEEN;
 	if (!READ_ONCE(pt->vmx_on))
-		wrmsrl(MSR_IA32_RTIT_CTL, ctl);
+		wrmsrq(MSR_IA32_RTIT_CTL, ctl);
 
 	WRITE_ONCE(event->hw.aux_config, ctl);
 
@@ -658,13 +667,13 @@ static void pt_config_buffer(struct pt_buffer *buf)
 	reg = virt_to_phys(base);
 	if (pt->output_base != reg) {
 		pt->output_base = reg;
-		wrmsrl(MSR_IA32_RTIT_OUTPUT_BASE, reg);
+		wrmsrq(MSR_IA32_RTIT_OUTPUT_BASE, reg);
 	}
 
 	reg = 0x7f | (mask << 7) | ((u64)buf->output_off << 32);
 	if (pt->output_mask != reg) {
 		pt->output_mask = reg;
-		wrmsrl(MSR_IA32_RTIT_OUTPUT_MASK, reg);
+		wrmsrq(MSR_IA32_RTIT_OUTPUT_MASK, reg);
 	}
 }
 
@@ -926,7 +935,7 @@ static void pt_handle_status(struct pt *pt)
 	int advance = 0;
 	u64 status;
 
-	rdmsrl(MSR_IA32_RTIT_STATUS, status);
+	rdmsrq(MSR_IA32_RTIT_STATUS, status);
 
 	if (status & RTIT_STATUS_ERROR) {
 		pr_err_ratelimited("ToPA ERROR encountered, trying to recover\n");
@@ -970,7 +979,7 @@ static void pt_handle_status(struct pt *pt)
 	if (advance)
 		pt_buffer_advance(buf);
 
-	wrmsrl(MSR_IA32_RTIT_STATUS, status);
+	wrmsrq(MSR_IA32_RTIT_STATUS, status);
 }
 
 /**
@@ -985,12 +994,12 @@ static void pt_read_offset(struct pt_buffer *buf)
 	struct topa_page *tp;
 
 	if (!buf->single) {
-		rdmsrl(MSR_IA32_RTIT_OUTPUT_BASE, pt->output_base);
+		rdmsrq(MSR_IA32_RTIT_OUTPUT_BASE, pt->output_base);
 		tp = phys_to_virt(pt->output_base);
 		buf->cur = &tp->topa;
 	}
 
-	rdmsrl(MSR_IA32_RTIT_OUTPUT_MASK, pt->output_mask);
+	rdmsrq(MSR_IA32_RTIT_OUTPUT_MASK, pt->output_mask);
 	/* offset within current output region */
 	buf->output_off = pt->output_mask >> 32;
 	/* index of current output region within this table */
@@ -1531,12 +1540,14 @@ void intel_pt_interrupt(void)
 
 	perf_aux_output_end(&pt->handle, local_xchg(&buf->data_size, 0));
 
-	if (!event->hw.state) {
+	event->hw.state |= PERF_HES_UPTODATE;
+
+	if (!(event->hw.state & PERF_HES_STOPPED)) {
 		int ret;
 
 		buf = perf_aux_output_begin(&pt->handle, event);
 		if (!buf) {
-			event->hw.state = PERF_HES_STOPPED;
+			event->hw.state |= PERF_HES_STOPPED;
 			WRITE_ONCE(pt->resume_allowed, 0);
 			return;
 		}
@@ -1552,6 +1563,8 @@ void intel_pt_interrupt(void)
 
 		pt_config_buffer(buf);
 		pt_config_start(event);
+
+		event->hw.state &= ~PERF_HES_UPTODATE;
 	}
 }
 
@@ -1585,11 +1598,10 @@ void intel_pt_handle_vmx(int on)
 
 	/* Turn PTs back on */
 	if (!on && event)
-		wrmsrl(MSR_IA32_RTIT_CTL, event->hw.aux_config);
+		wrmsrq(MSR_IA32_RTIT_CTL, event->hw.aux_config);
 
 	local_irq_restore(flags);
 }
-EXPORT_SYMBOL_GPL(intel_pt_handle_vmx);
 
 /*
  * PMU callbacks
@@ -1611,13 +1623,25 @@ static void pt_event_start(struct perf_event *event, int mode)
 			 * PMI might have just cleared these, so resume_allowed
 			 * must be checked again also.
 			 */
-			rdmsrl(MSR_IA32_RTIT_STATUS, status);
+			rdmsrq(MSR_IA32_RTIT_STATUS, status);
 			if (!(status & (RTIT_STATUS_TRIGGEREN |
 					RTIT_STATUS_ERROR |
 					RTIT_STATUS_STOPPED)) &&
 			   READ_ONCE(pt->resume_allowed))
 				pt_config_start(event);
 		}
+		return;
+	}
+
+	/*
+	 * Re-start subsequent to a call to pt_event_stop() without the
+	 * PERF_EF_UPDATE flag. Absence of PERF_HES_UPTODATE indicates that
+	 * perf_aux_output_begin() has already been called. This path can
+	 * come about only in snapshot/overwrite mode - see pt_event_stop().
+	 */
+	if (!(hwc->state & PERF_HES_UPTODATE)) {
+		hwc->state &= ~PERF_HES_STOPPED;
+		pt_config_enable(event);
 		return;
 	}
 
@@ -1631,7 +1655,7 @@ static void pt_event_start(struct perf_event *event, int mode)
 			goto fail_end_stop;
 	}
 
-	hwc->state = 0;
+	hwc->state &= ~(PERF_HES_STOPPED | PERF_HES_UPTODATE);
 
 	pt_config_buffer(buf);
 	pt_config(event);
@@ -1641,12 +1665,13 @@ static void pt_event_start(struct perf_event *event, int mode)
 fail_end_stop:
 	perf_aux_output_end(&pt->handle, 0);
 fail_stop:
-	hwc->state = PERF_HES_STOPPED;
+	hwc->state |= PERF_HES_STOPPED | PERF_HES_UPTODATE;
 }
 
 static void pt_event_stop(struct perf_event *event, int mode)
 {
 	struct pt *pt = this_cpu_ptr(&pt_ctx);
+	struct pt_buffer *buf;
 
 	if (mode & PERF_EF_PAUSE) {
 		if (READ_ONCE(pt->pause_allowed))
@@ -1672,17 +1697,24 @@ static void pt_event_stop(struct perf_event *event, int mode)
 
 	pt_config_stop(event);
 
-	if (event->hw.state == PERF_HES_STOPPED)
+	event->hw.state |= PERF_HES_STOPPED;
+
+	if (event->hw.state & PERF_HES_UPTODATE)
 		return;
 
-	event->hw.state = PERF_HES_STOPPED;
+	buf = perf_get_aux(&pt->handle);
+	if (!buf)
+		return;
 
-	if (mode & PERF_EF_UPDATE) {
-		struct pt_buffer *buf = perf_get_aux(&pt->handle);
-
-		if (!buf)
-			return;
-
+	/*
+	 * When not in snapshot/overwrite mode, there is a possibility that the
+	 * buffer has run out of space. The accounting for that is handled by
+	 * the update, so always update in that case. Snapshot/overwrite mode is
+	 * treated differently to allow for pt_event_snapshot_aux() which can
+	 * still get called if the AUX-sampling event is not stopped until after
+	 * PT is stopped.
+	 */
+	if ((mode & PERF_EF_UPDATE) || !buf->snapshot) {
 		if (WARN_ON_ONCE(pt->handle.event != event))
 			return;
 
@@ -1697,6 +1729,7 @@ static void pt_event_stop(struct perf_event *event, int mode)
 				local_xchg(&buf->data_size,
 					   buf->nr_pages << PAGE_SHIFT);
 		perf_aux_output_end(&pt->handle, local_xchg(&buf->data_size, 0));
+		event->hw.state |= PERF_HES_UPTODATE;
 	}
 }
 
@@ -1767,13 +1800,15 @@ static int pt_event_add(struct perf_event *event, int mode)
 	if (pt->handle.event)
 		goto fail;
 
+	event->hw.state |= PERF_HES_UPTODATE;
+
 	if (mode & PERF_EF_START) {
 		pt_event_start(event, 0);
 		ret = -EINVAL;
-		if (hwc->state == PERF_HES_STOPPED)
+		if (hwc->state & PERF_HES_STOPPED)
 			goto fail;
 	} else {
-		hwc->state = PERF_HES_STOPPED;
+		hwc->state |= PERF_HES_STOPPED;
 	}
 
 	ret = 0;
@@ -1839,7 +1874,7 @@ static __init int pt_init(void)
 	for_each_online_cpu(cpu) {
 		u64 ctl;
 
-		ret = rdmsrl_safe_on_cpu(cpu, MSR_IA32_RTIT_CTL, &ctl);
+		ret = rdmsrq_safe_on_cpu(cpu, MSR_IA32_RTIT_CTL, &ctl);
 		if (!ret && (ctl & RTIT_CTL_TRACEEN))
 			prior_warn++;
 	}
@@ -1863,6 +1898,8 @@ static __init int pt_init(void)
 
 	if (!intel_pt_validate_hw_cap(PT_CAP_topa_multiple_entries))
 		pt_pmu.pmu.capabilities = PERF_PMU_CAP_AUX_NO_SG;
+	else
+		pt_pmu.pmu.capabilities = PERF_PMU_CAP_AUX_PREFER_LARGE;
 
 	pt_pmu.pmu.capabilities		|= PERF_PMU_CAP_EXCLUSIVE |
 					   PERF_PMU_CAP_ITRACE |

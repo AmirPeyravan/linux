@@ -44,8 +44,10 @@ struct pvr_file;
  * Bits not defined anywhere are "undefined".
  *
  * CPU mapping options
- *    :PVR_BO_CPU_CACHED: By default, all GEM objects are mapped write-combined on the CPU. Set this
- *       flag to override this behaviour and map the object cached.
+ *    :PVR_BO_CPU_CACHED: By default, all GEM objects are mapped write-combined on the CPU. Set
+ *       this flag to override this behaviour and map the object cached. If the dma_coherent
+ *       property is present in devicetree, all allocations will be mapped as if this flag was set.
+ *       This does not require any additional consideration at allocation time.
  *
  * Firmware options
  *    :PVR_BO_FW_NO_CLEAR_ON_RESET: By default, all FW objects are cleared and reinitialised on hard
@@ -82,8 +84,10 @@ struct pvr_gem_object {
 	/**
 	 * @base: The underlying &struct drm_gem_shmem_object.
 	 *
-	 * Do not access this member directly, instead call
-	 * shem_gem_from_pvr_gem().
+	 * .. note::
+	 *
+	 *    This member should not be accessed directly, but instead by
+	 *    calling shmem_gem_from_pvr_gem().
 	 */
 	struct drm_gem_shmem_object base;
 
@@ -95,12 +99,6 @@ struct pvr_gem_object {
 	 * changed after creation.
 	 *
 	 * Must be a combination of DRM_PVR_BO_* and/or PVR_BO_* flags.
-	 *
-	 * .. note::
-	 *
-	 *    This member is declared const to indicate that none of these
-	 *    options may change or be changed throughout the object's
-	 *    lifetime.
 	 */
 	u64 flags;
 

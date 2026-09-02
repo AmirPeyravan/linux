@@ -23,6 +23,7 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <linux/cgroup_dmem.h>
 #include <linux/limits.h>
 
 #include <drm/ttm/ttm_range_manager.h>
@@ -181,12 +182,19 @@ static int
 nouveau_ttm_init_vram(struct nouveau_drm *drm)
 {
 	if (drm->client.device.info.family >= NV_DEVICE_INFO_V0_TESLA) {
-		struct ttm_resource_manager *man = kzalloc(sizeof(*man), GFP_KERNEL);
+		struct ttm_resource_manager *man = kzalloc_obj(*man);
 
 		if (!man)
 			return -ENOMEM;
 
 		man->func = &nouveau_vram_manager;
+
+		man->cg = drmm_cgroup_register_region(drm->dev, "vram",
+						      &(struct dmem_cgroup_init){
+							      .size = drm->gem.vram_available
+						      });
+		if (IS_ERR(man->cg))
+			return PTR_ERR(man->cg);
 
 		ttm_resource_manager_init(man, &drm->ttm.bdev,
 					  drm->gem.vram_available >> PAGE_SHIFT);
@@ -229,7 +237,7 @@ nouveau_ttm_init_gtt(struct nouveau_drm *drm)
 		return ttm_range_man_init(&drm->ttm.bdev, TTM_PL_TT, true,
 					  size_pages);
 
-	man = kzalloc(sizeof(*man), GFP_KERNEL);
+	man = kzalloc_obj(*man);
 	if (!man)
 		return -ENOMEM;
 
@@ -302,8 +310,10 @@ nouveau_ttm_init(struct nouveau_drm *drm)
 	ret = ttm_device_init(&drm->ttm.bdev, &nouveau_bo_driver, drm->dev->dev,
 				  dev->anon_inode->i_mapping,
 				  dev->vma_offset_manager,
-				  drm_need_swiotlb(drm->client.mmu.dmabits),
-				  drm->client.mmu.dmabits <= 32);
+				  (drm_need_swiotlb(drm->client.mmu.dmabits) ?
+				   TTM_ALLOCATION_POOL_USE_DMA_ALLOC : 0) |
+				  (drm->client.mmu.dmabits <= 32 ?
+				   TTM_ALLOCATION_POOL_USE_DMA32 : 0));
 	if (ret) {
 		NV_ERROR(drm, "error initialising bo driver, %d\n", ret);
 		return ret;
@@ -312,8 +322,8 @@ nouveau_ttm_init(struct nouveau_drm *drm)
 	/* VRAM init */
 	drm->gem.vram_available = drm->client.device.info.ram_user;
 
-	arch_io_reserve_memtype_wc(device->func->resource_addr(device, 1),
-				   device->func->resource_size(device, 1));
+	arch_io_reserve_memtype_wc(device->func->resource_addr(device, NVKM_BAR1_FB),
+				   device->func->resource_size(device, NVKM_BAR1_FB));
 
 	ret = nouveau_ttm_init_vram(drm);
 	if (ret) {
@@ -321,8 +331,8 @@ nouveau_ttm_init(struct nouveau_drm *drm)
 		return ret;
 	}
 
-	drm->ttm.mtrr = arch_phys_wc_add(device->func->resource_addr(device, 1),
-					 device->func->resource_size(device, 1));
+	drm->ttm.mtrr = arch_phys_wc_add(device->func->resource_addr(device, NVKM_BAR1_FB),
+					 device->func->resource_size(device, NVKM_BAR1_FB));
 
 	/* GART init */
 	if (!drm->agp.bridge) {
@@ -357,7 +367,7 @@ nouveau_ttm_fini(struct nouveau_drm *drm)
 
 	arch_phys_wc_del(drm->ttm.mtrr);
 	drm->ttm.mtrr = 0;
-	arch_io_free_memtype_wc(device->func->resource_addr(device, 1),
-				device->func->resource_size(device, 1));
+	arch_io_free_memtype_wc(device->func->resource_addr(device, NVKM_BAR1_FB),
+				device->func->resource_size(device, NVKM_BAR1_FB));
 
 }

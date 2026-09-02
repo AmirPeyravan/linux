@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2024-2025 Intel Corporation
+ * Copyright (C) 2024-2026 Intel Corporation
  */
 #include <net/mac80211.h>
 
@@ -50,6 +50,9 @@ static void iwl_mld_chanctx_usage_iter(void *_data, u8 *mac,
 		if (rcu_access_pointer(link_conf->chanctx_conf) != data->ctx)
 			continue;
 
+		if (vif->type == NL80211_IFTYPE_AP && link_conf->ftm_responder)
+			data->use_def = true;
+
 		if (iwl_mld_chanctx_fils_enabled(vif, data->ctx))
 			data->use_def = true;
 	}
@@ -96,9 +99,9 @@ iwl_mld_nl80211_width_to_fw(enum nl80211_chan_width width)
 /* Maps the driver specific control channel position (relative to the center
  * freq) definitions to the fw values
  */
-u8 iwl_mld_get_fw_ctrl_pos(const struct cfg80211_chan_def *chandef)
+static u8 _iwl_mld_get_fw_ctrl_pos(u32 control, u32 cf1)
 {
-	int offs = chandef->chan->center_freq - chandef->center_freq1;
+	int offs = control - cf1;
 	int abs_offs = abs(offs);
 	u8 ret;
 
@@ -124,6 +127,12 @@ u8 iwl_mld_get_fw_ctrl_pos(const struct cfg80211_chan_def *chandef)
 	return ret;
 }
 
+u8 iwl_mld_get_fw_ctrl_pos(const struct cfg80211_chan_def *chandef)
+{
+	return _iwl_mld_get_fw_ctrl_pos(chandef->chan->center_freq,
+					chandef->center_freq1);
+}
+
 int iwl_mld_phy_fw_action(struct iwl_mld *mld,
 			  struct ieee80211_chanctx_conf *ctx, u32 action)
 {
@@ -147,9 +156,61 @@ int iwl_mld_phy_fw_action(struct iwl_mld *mld,
 		cmd.sbb_ctrl_channel_loc = iwl_mld_get_fw_ctrl_pos(&ctx->ap);
 	}
 
+	/*
+	 * Set NPCA channel if NPCA is used; if not used, just set it to an
+	 * arbitrary channel on the other side to help firmware.
+	 */
+	if (chandef->npca_chan)
+		cmd.secondary_ctrl_chnl_loc =
+			_iwl_mld_get_fw_ctrl_pos(chandef->npca_chan->center_freq,
+						 chandef->center_freq1);
+	else
+		cmd.secondary_ctrl_chnl_loc =
+			cmd.ci.ctrl_pos ^ IWL_PHY_CTRL_POS_ABOVE;
+
 	ret = iwl_mld_send_cmd_pdu(mld, PHY_CONTEXT_CMD, &cmd);
 	if (ret)
 		IWL_ERR(mld, "Failed to send PHY_CONTEXT_CMD ret = %d\n", ret);
 
 	return ret;
+}
+
+static u32 iwl_mld_get_phy_config(struct iwl_mld *mld)
+{
+	u32 phy_config = ~(FW_PHY_CFG_TX_CHAIN |
+			   FW_PHY_CFG_RX_CHAIN);
+	u32 valid_rx_ant = iwl_mld_get_valid_rx_ant(mld);
+	u32 valid_tx_ant = iwl_mld_get_valid_tx_ant(mld);
+
+	phy_config |= valid_tx_ant << FW_PHY_CFG_TX_CHAIN_POS |
+		      valid_rx_ant << FW_PHY_CFG_RX_CHAIN_POS;
+
+	return mld->fw->phy_config & phy_config;
+}
+
+int iwl_mld_send_phy_cfg_cmd(struct iwl_mld *mld)
+{
+	const struct iwl_tlv_calib_ctrl *default_calib =
+		&mld->fw->default_calib[IWL_UCODE_REGULAR];
+	struct iwl_phy_cfg_cmd_v3 cmd = {
+		.phy_cfg = cpu_to_le32(iwl_mld_get_phy_config(mld)),
+		.calib_control.event_trigger = default_calib->event_trigger,
+		.calib_control.flow_trigger = default_calib->flow_trigger,
+		.phy_specific_cfg = mld->fwrt.phy_filters,
+	};
+
+	IWL_DEBUG_INFO(mld, "Sending Phy CFG command: 0x%x\n", cmd.phy_cfg);
+
+	return iwl_mld_send_cmd_pdu(mld, PHY_CONFIGURATION_CMD, &cmd);
+}
+
+void iwl_mld_update_phy_chandef(struct iwl_mld *mld,
+				struct ieee80211_chanctx_conf *ctx)
+{
+	struct iwl_mld_phy *phy = iwl_mld_phy_from_mac80211(ctx);
+	struct cfg80211_chan_def *chandef =
+		iwl_mld_get_chandef_from_chanctx(mld, ctx);
+
+	phy->chandef = *chandef;
+	iwl_mld_phy_fw_action(mld, ctx, FW_CTXT_ACTION_MODIFY);
 }

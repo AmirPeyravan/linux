@@ -47,12 +47,23 @@
 #define FALCON_DMATRFMOFFS			0x00001114
 
 #define FALCON_DMATRFCMD			0x00001118
+#define FALCON_DMATRFCMD_FULL			(1 << 0)
 #define FALCON_DMATRFCMD_IDLE			(1 << 1)
 #define FALCON_DMATRFCMD_IMEM			(1 << 4)
 #define FALCON_DMATRFCMD_SIZE_256B		(6 << 8)
 #define FALCON_DMATRFCMD_DMACTX(v)		(((v) & 0x7) << 12)
 
 #define FALCON_DMATRFFBOFFS			0x0000111c
+
+#define RISCV_BOOT_VECTOR_LO			0x00001780
+#define RISCV_BOOT_VECTOR_HI			0x00001784
+
+#define RISCV_CPUCTL				0x00001788
+#define RISCV_CPUCTL_STARTCPU			(1 << 0)
+#define RISCV_CPUCTL_ACTIVE_STAT_ACTIVE		(1 << 7)
+
+#define RISCV_BCR_CTRL				0x00001a68
+#define RISCV_BCR_CTRL_CORE_SELECT_RISCV	(1 << 4)
 
 struct falcon_fw_bin_header_v1 {
 	u32 magic;		/* 0x10de */
@@ -75,6 +86,14 @@ struct falcon_fw_os_header_v1 {
 	u32 data_size;
 };
 
+struct falcon_fw_riscv_desc {
+	u32 reserved[74];
+	u32 data_offset;
+	u32 data_size;
+	u32 code_offset;
+	u32 code_size;
+};
+
 struct falcon_firmware_section {
 	unsigned long offset;
 	size_t size;
@@ -83,6 +102,8 @@ struct falcon_firmware_section {
 struct falcon_firmware {
 	/* Firmware after it is read but not loaded */
 	const struct firmware *firmware;
+	/* RISC-V firmware descriptor */
+	const struct firmware *desc_firmware;
 
 	/* Raw firmware data */
 	dma_addr_t iova;
@@ -100,6 +121,9 @@ struct falcon {
 	/* Set by falcon client */
 	struct device *dev;
 	void __iomem *regs;
+
+	/* Peregrine falcon, external boot */
+	bool riscv;
 
 	struct falcon_firmware firmware;
 };

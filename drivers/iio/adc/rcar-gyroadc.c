@@ -159,18 +159,6 @@ static const struct iio_chan_spec rcar_gyroadc_iio_channels_3[] = {
 	RCAR_GYROADC_CHAN(7),
 };
 
-static int rcar_gyroadc_set_power(struct rcar_gyroadc *priv, bool on)
-{
-	struct device *dev = priv->dev;
-
-	if (on) {
-		return pm_runtime_resume_and_get(dev);
-	} else {
-		pm_runtime_mark_last_busy(dev);
-		return pm_runtime_put_autosuspend(dev);
-	}
-}
-
 static int rcar_gyroadc_read_raw(struct iio_dev *indio_dev,
 				 struct iio_chan_spec const *chan,
 				 int *val, int *val2, long mask)
@@ -199,21 +187,20 @@ static int rcar_gyroadc_read_raw(struct iio_dev *indio_dev,
 		if (!consumer)
 			return -EINVAL;
 
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
-		ret = rcar_gyroadc_set_power(priv, true);
+		ret = pm_runtime_resume_and_get(priv->dev);
 		if (ret < 0) {
-			iio_device_release_direct_mode(indio_dev);
+			iio_device_release_direct(indio_dev);
 			return ret;
 		}
 
 		*val = readl(priv->regs + datareg);
 		*val &= BIT(priv->sample_width) - 1;
 
-		ret = rcar_gyroadc_set_power(priv, false);
-		iio_device_release_direct_mode(indio_dev);
+		ret = pm_runtime_put_autosuspend(priv->dev);
+		iio_device_release_direct(indio_dev);
 		if (ret < 0)
 			return ret;
 
@@ -308,7 +295,7 @@ static const struct of_device_id rcar_gyroadc_child_match[] __maybe_unused = {
 		.compatible	= "maxim,max11100",
 		.data		= (void *)RCAR_GYROADC_MODE_SELECT_3_MAX1162,
 	},
-	{ /* sentinel */ }
+	{ }
 };
 
 static int rcar_gyroadc_parse_subdevs(struct iio_dev *indio_dev)

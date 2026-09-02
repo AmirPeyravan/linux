@@ -2,6 +2,7 @@
 #ifndef __MM_CMA_H__
 #define __MM_CMA_H__
 
+#include <linux/cma.h>
 #include <linux/debugfs.h>
 #include <linux/kobject.h>
 
@@ -25,9 +26,11 @@ struct cma_kobject {
  */
 struct cma_memrange {
 	unsigned long base_pfn;
-	unsigned long early_pfn;
 	unsigned long count;
-	unsigned long *bitmap;
+	union {
+		unsigned long early_pfn;
+		unsigned long *bitmap;
+	};
 #ifdef CONFIG_CMA_DEBUGFS
 	struct debugfs_u32_array dfs_bitmap;
 #endif

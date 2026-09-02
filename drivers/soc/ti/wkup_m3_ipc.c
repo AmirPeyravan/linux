@@ -630,10 +630,8 @@ static int wkup_m3_ipc_probe(struct platform_device *pdev)
 
 	ret = devm_request_irq(dev, irq, wkup_m3_txev_handler,
 			       0, "wkup_m3_txev", m3_ipc);
-	if (ret) {
-		dev_err(dev, "request_irq failed\n");
+	if (ret)
 		return ret;
-	}
 
 	m3_ipc->mbox_client.dev = dev;
 	m3_ipc->mbox_client.tx_done = NULL;
@@ -644,11 +642,9 @@ static int wkup_m3_ipc_probe(struct platform_device *pdev)
 
 	m3_ipc->mbox = mbox_request_channel(&m3_ipc->mbox_client, 0);
 
-	if (IS_ERR(m3_ipc->mbox)) {
-		dev_err(dev, "IPC Request for A8->M3 Channel failed! %ld\n",
-			PTR_ERR(m3_ipc->mbox));
-		return PTR_ERR(m3_ipc->mbox);
-	}
+	if (IS_ERR(m3_ipc->mbox))
+		return dev_err_probe(dev, PTR_ERR(m3_ipc->mbox),
+				     "IPC Request for A8->M3 Channel failed!\n");
 
 	if (of_property_read_u32(dev->of_node, "ti,rproc", &rproc_phandle)) {
 		dev_err(&pdev->dev, "could not get rproc phandle\n");

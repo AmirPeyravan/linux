@@ -6,8 +6,11 @@
 #define cb_compound_enc_hdr_sz		4
 #define cb_compound_dec_hdr_sz		(3 + (NFS4_MAXTAGLEN >> 2))
 #define sessionid_sz			(NFS4_MAX_SESSIONID_LEN >> 2)
+#define enc_referring_call4_sz		(1 + 1)
+#define enc_referring_call_list4_sz	(sessionid_sz + 1 + \
+					enc_referring_call4_sz)
 #define cb_sequence_enc_sz		(sessionid_sz + 4 +             \
-					1 /* no referring calls list yet */)
+					enc_referring_call_list4_sz)
 #define cb_sequence_dec_sz		(op_dec_sz + sessionid_sz + 4)
 
 #define op_enc_sz			1
@@ -27,6 +30,18 @@
 					1 + 3 +                         \
 					enc_nfs4_fh_sz + 4)
 #define NFS4_dec_cb_layout_sz		(cb_compound_dec_hdr_sz  +      \
+					cb_sequence_dec_sz +            \
+					op_dec_sz)
+
+#define NFS4_enc_cb_notify_sz		(cb_compound_enc_hdr_sz +       \
+					cb_sequence_enc_sz +            \
+					1 + enc_stateid_sz +            \
+					enc_nfs4_fh_sz +		\
+					1 +				\
+					NOTIFY4_EVENT_QUEUE_SIZE *	\
+					(2 + (NFS4_OPAQUE_LIMIT >> 2)))
+
+#define NFS4_dec_cb_notify_sz		(cb_compound_dec_hdr_sz  +      \
 					cb_sequence_dec_sz +            \
 					op_dec_sz)
 

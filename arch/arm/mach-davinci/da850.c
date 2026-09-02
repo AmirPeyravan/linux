@@ -4,13 +4,12 @@
  *
  * Copyright (C) 2009 Texas Instruments Incorporated - https://www.ti.com/
  *
- * Derived from: arch/arm/mach-davinci/da830.c
  * Original Copyrights follow:
  *
  * 2009 (c) MontaVista Software, Inc.
  */
 
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/mfd/da8xx-cfgchip.h>

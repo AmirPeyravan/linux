@@ -2,7 +2,7 @@
 /*
  * KUnit tests for channel helper functions
  *
- * Copyright (C) 2024-2025 Intel Corporation
+ * Copyright (C) 2024-2026 Intel Corporation
  */
 #include <kunit/test.h>
 #include <kunit/test-bug.h>
@@ -24,7 +24,7 @@ int iwlmld_kunit_test_init(struct kunit *test)
 {
 	struct iwl_mld *mld;
 	struct iwl_trans *trans;
-	const struct iwl_cfg *cfg;
+	const struct iwl_rf_cfg *cfg;
 	struct iwl_fw *fw;
 	struct ieee80211_hw *hw;
 
@@ -42,7 +42,7 @@ int iwlmld_kunit_test_init(struct kunit *test)
 	iwl_construct_mld(mld, trans, cfg, fw, hw, NULL);
 
 	fw->ucode_capa.num_stations = IWL_STATION_COUNT_MAX;
-	fw->ucode_capa.num_links = IWL_FW_MAX_LINK_ID + 1;
+	fw->ucode_capa.num_links = IWL_FW_MAX_LINKS;
 
 	mld->fwrt.trans = trans;
 	mld->fwrt.fw = fw;
@@ -68,8 +68,6 @@ int iwlmld_kunit_test_init(struct kunit *test)
 	return 0;
 }
 
-IWL_MLD_ALLOC_FN(link, bss_conf)
-
 static void iwlmld_kunit_init_link(struct ieee80211_vif *vif,
 				   struct ieee80211_bss_conf *link,
 				   struct iwl_mld_link *mld_link, int link_id)
@@ -94,7 +92,7 @@ static void iwlmld_kunit_init_link(struct ieee80211_vif *vif,
 	rcu_assign_pointer(vif->link_conf[link_id], link);
 }
 
-IWL_MLD_ALLOC_FN(vif, vif)
+IWL_MLD_ALLOC_FN_STATIC(vif, vif)
 
 /* Helper function to add and initialize a VIF for KUnit tests */
 struct ieee80211_vif *iwlmld_kunit_add_vif(bool mlo, enum nl80211_iftype type)
@@ -146,7 +144,7 @@ iwlmld_kunit_add_link(struct ieee80211_vif *vif, int link_id)
 }
 
 struct ieee80211_chanctx_conf *
-iwlmld_kunit_add_chanctx_from_def(struct cfg80211_chan_def *def)
+iwlmld_kunit_add_chanctx(const struct cfg80211_chan_def *def)
 {
 	struct kunit *test = kunit_get_current_test();
 	struct iwl_mld *mld = test->priv;
@@ -199,7 +197,7 @@ void iwlmld_kunit_assign_chanctx_to_link(struct ieee80211_vif *vif,
 		vif->active_links |= BIT(link->link_id);
 }
 
-IWL_MLD_ALLOC_FN(link_sta, link_sta)
+IWL_MLD_ALLOC_FN_STATIC(link_sta, link_sta)
 
 static void iwlmld_kunit_add_link_sta(struct ieee80211_sta *sta,
 				      struct ieee80211_link_sta *link_sta,
@@ -346,8 +344,7 @@ iwlmld_kunit_setup_assoc(bool mlo, struct iwl_mld_kunit_link *assoc_link)
 	else
 		link = &vif->bss_conf;
 
-	chan_ctx = iwlmld_kunit_add_chanctx(assoc_link->band,
-					    assoc_link->bandwidth);
+	chan_ctx = iwlmld_kunit_add_chanctx(assoc_link->chandef);
 
 	wiphy_lock(mld->wiphy);
 	iwlmld_kunit_assign_chanctx_to_link(vif, link, chan_ctx);
@@ -428,7 +425,7 @@ struct ieee80211_vif *iwlmld_kunit_assoc_emlsr(struct iwl_mld_kunit_link *link1,
 	link = wiphy_dereference(mld->wiphy, vif->link_conf[link2->id]);
 	KUNIT_EXPECT_NOT_NULL(test, link);
 
-	chan_ctx = iwlmld_kunit_add_chanctx(link2->band, link2->bandwidth);
+	chan_ctx = iwlmld_kunit_add_chanctx(link2->chandef);
 	iwlmld_kunit_assign_chanctx_to_link(vif, link, chan_ctx);
 
 	wiphy_unlock(mld->wiphy);
@@ -440,6 +437,66 @@ struct ieee80211_vif *iwlmld_kunit_assoc_emlsr(struct iwl_mld_kunit_link *link1,
 	iwlmld_kunit_alloc_link_sta(sta, link2->id);
 
 	return vif;
+}
+
+struct element *
+iwlmld_kunit_create_he_6ghz_oper(struct ieee80211_he_6ghz_oper he_6ghz)
+{
+	struct kunit *test = kunit_get_current_test();
+	u8 *data;
+	size_t data_len;
+	size_t offset = 0;
+	__le32 he_oper_params;
+	__le16 he_mcs_nss_set = 0;
+
+	/* Build HE Operation IE with 6 GHz info using raw buffer.
+	 * Cannot use struct embedding because ieee80211_he_operation
+	 * has a flexible array member (optional[]).
+	 *
+	 * Layout:
+	 *   1 byte:         ext_id (WLAN_EID_EXT_HE_OPERATION)
+	 *   he_oper_params: he_oper_params (from ieee80211_he_operation)
+	 *   he_mcs_nss_set: he_mcs_nss_set (from ieee80211_he_operation)
+	 *   he_6ghz:        ieee80211_he_6ghz_oper (goes into optional[])
+	 */
+	data_len = 1 + sizeof(he_oper_params) + sizeof(he_mcs_nss_set) +
+		   sizeof(struct ieee80211_he_6ghz_oper);
+
+	data = kunit_kzalloc(test, data_len, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, data);
+
+	data[offset++] = WLAN_EID_EXT_HE_OPERATION;
+
+	he_oper_params = cpu_to_le32(IEEE80211_HE_OPERATION_6GHZ_OP_INFO);
+	memcpy(&data[offset], &he_oper_params, sizeof(he_oper_params));
+	offset += sizeof(he_oper_params);
+
+	memcpy(&data[offset], &he_mcs_nss_set, sizeof(he_mcs_nss_set));
+	offset += sizeof(he_mcs_nss_set);
+
+	memcpy(&data[offset], &he_6ghz, sizeof(he_6ghz));
+
+	return iwlmld_kunit_gen_element(WLAN_EID_EXTENSION, data, data_len);
+}
+
+struct cfg80211_bss_ies *iwlmld_kunit_create_bss_ies(struct element *elem)
+{
+	struct kunit *test = kunit_get_current_test();
+	struct cfg80211_bss_ies *ies;
+	size_t ies_len = 0;
+
+	if (elem)
+		ies_len = sizeof(*elem) + elem->datalen;
+
+	ies = kunit_kzalloc(test, sizeof(*ies) + ies_len, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, ies);
+
+	ies->len = ies_len;
+
+	if (elem)
+		memcpy(ies->data, elem, ies_len);
+
+	return ies;
 }
 
 struct element *iwlmld_kunit_gen_element(u8 id, const void *data, size_t len)
@@ -472,3 +529,33 @@ struct iwl_mld_phy *iwlmld_kunit_get_phy_of_link(struct ieee80211_vif *vif,
 
 	return iwl_mld_phy_from_mac80211(chanctx);
 }
+
+static const struct chandef_case {
+	const char *desc;
+	const struct cfg80211_chan_def *chandef;
+} chandef_cases[] = {
+#define CHANDEF(c, ...) { .desc = "chandef " #c " valid", .chandef = &c, },
+	CHANDEF_LIST
+#undef CHANDEF
+};
+
+KUNIT_ARRAY_PARAM_DESC(chandef, chandef_cases, desc);
+
+static void test_iwl_mld_chandef_valid(struct kunit *test)
+{
+	const struct chandef_case *params = test->param_value;
+
+	KUNIT_EXPECT_EQ(test, true, cfg80211_chandef_valid(params->chandef));
+}
+
+static struct kunit_case chandef_test_cases[] = {
+	KUNIT_CASE_PARAM(test_iwl_mld_chandef_valid, chandef_gen_params),
+	{}
+};
+
+static struct kunit_suite chandef_tests = {
+	.name = "iwlmld_valid_test_chandefs",
+	.test_cases = chandef_test_cases,
+};
+
+kunit_test_suite(chandef_tests);

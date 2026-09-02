@@ -80,8 +80,6 @@ struct ad5791_chip_info {
 /**
  * struct ad5791_state - driver instance specific data
  * @spi:			spi_device
- * @reg_vdd:		positive supply regulator
- * @reg_vss:		negative supply regulator
  * @gpio_reset:		reset gpio
  * @gpio_clear:		clear gpio
  * @gpio_ldac:		load dac gpio
@@ -100,8 +98,6 @@ struct ad5791_chip_info {
  */
 struct ad5791_state {
 	struct spi_device		*spi;
-	struct regulator		*reg_vdd;
-	struct regulator		*reg_vss;
 	struct gpio_desc		*gpio_reset;
 	struct gpio_desc		*gpio_clear;
 	struct gpio_desc		*gpio_ldac;
@@ -138,13 +134,11 @@ static int ad5791_spi_read(struct ad5791_state *st, u8 addr, u32 *val)
 	struct spi_transfer xfers[] = {
 		{
 			.tx_buf = &st->data[0].d8[1],
-			.bits_per_word = 8,
 			.len = 3,
 			.cs_change = 1,
 		}, {
 			.tx_buf = &st->data[1].d8[1],
 			.rx_buf = &st->data[2].d8[1],
-			.bits_per_word = 8,
 			.len = 3,
 		},
 	};
@@ -312,7 +306,7 @@ static const struct iio_chan_spec_ext_info ad5791_ext_info[] = {
 	IIO_ENUM("powerdown_mode", IIO_SHARED_BY_TYPE,
 		 &ad5791_powerdown_mode_enum),
 	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ad5791_powerdown_mode_enum),
-	{ },
+	{ }
 };
 
 #define AD5791_DEFINE_CHIP_INFO(_name, bits, _shift, _lin_comp)		\
@@ -592,11 +586,11 @@ static const struct of_device_id ad5791_of_match[] = {
 MODULE_DEVICE_TABLE(of, ad5791_of_match);
 
 static const struct spi_device_id ad5791_id[] = {
-	{ "ad5760", (kernel_ulong_t)&ad5760_chip_info },
-	{ "ad5780", (kernel_ulong_t)&ad5780_chip_info },
-	{ "ad5781", (kernel_ulong_t)&ad5781_chip_info },
-	{ "ad5790", (kernel_ulong_t)&ad5790_chip_info },
-	{ "ad5791", (kernel_ulong_t)&ad5791_chip_info },
+	{ .name = "ad5760", .driver_data = (kernel_ulong_t)&ad5760_chip_info },
+	{ .name = "ad5780", .driver_data = (kernel_ulong_t)&ad5780_chip_info },
+	{ .name = "ad5781", .driver_data = (kernel_ulong_t)&ad5781_chip_info },
+	{ .name = "ad5790", .driver_data = (kernel_ulong_t)&ad5790_chip_info },
+	{ .name = "ad5791", .driver_data = (kernel_ulong_t)&ad5791_chip_info },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad5791_id);

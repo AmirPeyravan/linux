@@ -27,6 +27,17 @@
 #include "kfd_priv.h"
 
 static struct dentry *debugfs_root;
+static struct dentry *debugfs_proc;
+static struct list_head procs;
+
+struct debugfs_proc_entry {
+	struct list_head list;
+	struct dentry *proc_dentry;
+	struct kfd_process *process;
+	pid_t pid;
+};
+
+#define MAX_DEBUGFS_FILENAME_LEN 32
 
 static int kfd_debugfs_open(struct inode *inode, struct file *file)
 {
@@ -92,6 +103,8 @@ static const struct file_operations kfd_debugfs_hang_hws_fops = {
 void kfd_debugfs_init(void)
 {
 	debugfs_root = debugfs_create_dir("kfd", NULL);
+	debugfs_proc = debugfs_create_dir("proc", debugfs_root);
+	INIT_LIST_HEAD(&procs);
 
 	debugfs_create_file("mqds", S_IFREG | 0444, debugfs_root,
 			    kfd_debugfs_mqds_by_process, &kfd_debugfs_fops);
@@ -107,5 +120,137 @@ void kfd_debugfs_init(void)
 
 void kfd_debugfs_fini(void)
 {
+	debugfs_remove_recursive(debugfs_proc);
 	debugfs_remove_recursive(debugfs_root);
+}
+
+static ssize_t kfd_debugfs_pasid_read(struct file *file, char __user *buf,
+				      size_t count, loff_t *ppos)
+{
+	struct kfd_process_device *pdd = file_inode(file)->i_private;
+	char tmp[32];
+	int len;
+
+	len = snprintf(tmp, sizeof(tmp), "%u\n", pdd->pasid);
+
+	return simple_read_from_buffer(buf, count, ppos, tmp, len);
+}
+
+static const struct file_operations kfd_debugfs_pasid_fops = {
+	.owner = THIS_MODULE,
+	.read = kfd_debugfs_pasid_read,
+};
+
+/* This helper locates the debugfs entry of a kfd process */
+static struct debugfs_proc_entry *kfd_debugfs_find_process_entry(struct kfd_process *p)
+{
+	struct debugfs_proc_entry *entry;
+
+	list_for_each_entry(entry, &procs, list) {
+		if (entry->process == p)
+			return entry;
+	}
+
+	return NULL;
+}
+
+/* This helper creates pasid file of a kfd process under debugfs */
+static void kfd_debugfs_create_pasid_files(struct kfd_process *p,
+					   struct dentry *dir)
+{
+	char name[MAX_DEBUGFS_FILENAME_LEN];
+	struct kfd_process_device *pdd;
+	int i;
+
+	/* create pasid file for each GPU */
+	for (i = 0; i < p->n_pdds; i++) {
+		pdd = p->pdds[i];
+		snprintf(name, MAX_DEBUGFS_FILENAME_LEN, "pasid_%u", pdd->dev->id);
+		debugfs_create_file((const char *)name, S_IFREG | 0444,
+				    dir, pdd, &kfd_debugfs_pasid_fops);
+	}
+}
+
+int kfd_debugfs_add_process(struct kfd_process *p)
+{
+	struct debugfs_proc_entry *primary_entry;
+	char name[MAX_DEBUGFS_FILENAME_LEN];
+	struct kfd_process *primary_process;
+	struct debugfs_proc_entry *entry;
+	int ret;
+
+	entry = kzalloc_obj(*entry);
+	if (!entry)
+		return -ENOMEM;
+
+	entry->process = p;
+	entry->pid = p->lead_thread->pid;
+
+	if (p->context_id == KFD_CONTEXT_ID_PRIMARY) {
+		snprintf(name, MAX_DEBUGFS_FILENAME_LEN, "%d",
+			 (int)entry->pid);
+		entry->proc_dentry = debugfs_create_dir(name, debugfs_proc);
+	} else {
+		primary_process = kfd_lookup_process_by_mm(p->lead_thread->mm);
+		if (!primary_process) {
+			ret = -ESRCH;
+			goto err_free_entry;
+		}
+
+		primary_entry = kfd_debugfs_find_process_entry(primary_process);
+		kfd_unref_process(primary_process);
+		if (!primary_entry) {
+			pr_warn("Failed to find the primary debugfs entry for pid %d\n",
+				entry->pid);
+			ret = -ENOENT;
+			goto err_free_entry;
+		}
+
+		snprintf(name, MAX_DEBUGFS_FILENAME_LEN, "context_%u",
+			 p->context_id);
+		entry->proc_dentry = debugfs_create_dir(name,
+							primary_entry->proc_dentry);
+	}
+
+	list_add(&entry->list, &procs);
+	kfd_debugfs_create_pasid_files(p, entry->proc_dentry);
+
+	return 0;
+
+err_free_entry:
+	kfree(entry);
+	return ret;
+}
+
+/* This helper removes a debugfs entry and its sub-entries */
+static void kfd_debugfs_remove_entry(struct debugfs_proc_entry *entry)
+{
+	debugfs_remove(entry->proc_dentry);
+	list_del(&entry->list);
+	kfree(entry);
+}
+
+void kfd_debugfs_remove_process(struct kfd_process *p)
+{
+	struct debugfs_proc_entry *entry, *next;
+
+	mutex_lock(&kfd_processes_mutex);
+	if (p->context_id == KFD_CONTEXT_ID_PRIMARY) {
+		/* remove entries of secondary contexts */
+		list_for_each_entry_safe(entry, next, &procs, list) {
+			if (entry->pid != p->lead_thread->pid || entry->process == p)
+				continue;
+
+			kfd_debugfs_remove_entry(entry);
+		}
+	}
+
+	list_for_each_entry_safe(entry, next, &procs, list) {
+		if (entry->process != p)
+			continue;
+
+		kfd_debugfs_remove_entry(entry);
+	}
+
+	mutex_unlock(&kfd_processes_mutex);
 }

@@ -18,18 +18,21 @@ int netdev_debug_event(struct notifier_block *nb, unsigned long event,
 
 	/* Keep enum and don't add default to trigger -Werror=switch */
 	switch (cmd) {
+	case NETDEV_XDP_FEAT_CHANGE:
+		netdev_assert_locked(dev);
+		fallthrough;
+	case NETDEV_CHANGE:
 	case NETDEV_REGISTER:
 	case NETDEV_UP:
-	case NETDEV_CHANGE:
-		netdev_ops_assert_locked(dev);
-		fallthrough;
 	case NETDEV_DOWN:
+	case NETDEV_GOING_DOWN:
+		netdev_assert_locked_ops_compat(dev);
+		fallthrough;
 	case NETDEV_REBOOT:
 	case NETDEV_UNREGISTER:
 	case NETDEV_CHANGEMTU:
 	case NETDEV_CHANGEADDR:
 	case NETDEV_PRE_CHANGEADDR:
-	case NETDEV_GOING_DOWN:
 	case NETDEV_FEAT_CHANGE:
 	case NETDEV_BONDING_FAILOVER:
 	case NETDEV_PRE_UP:
@@ -58,11 +61,11 @@ int netdev_debug_event(struct notifier_block *nb, unsigned long event,
 	case NETDEV_OFFLOAD_XSTATS_DISABLE:
 	case NETDEV_OFFLOAD_XSTATS_REPORT_USED:
 	case NETDEV_OFFLOAD_XSTATS_REPORT_DELTA:
-	case NETDEV_XDP_FEAT_CHANGE:
 		ASSERT_RTNL();
 		break;
 
 	case NETDEV_CHANGENAME:
+		netdev_assert_locked_ops(dev);
 		ASSERT_RTNL_NET(net);
 		break;
 	}

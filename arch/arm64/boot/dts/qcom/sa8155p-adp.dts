@@ -326,7 +326,6 @@
 
 	phy-handle = <&rgmii_phy>;
 	phy-mode = "rgmii";
-	max-speed = <1000>;
 
 	mdio {
 		compatible = "snps,dwmac-mdio";
@@ -383,12 +382,12 @@
 
 &remoteproc_adsp {
 	status = "okay";
-	firmware-name = "qcom/sa8155p/adsp.mdt";
+	firmware-name = "qcom/sa8155p/adsp.mbn";
 };
 
 &remoteproc_cdsp {
 	status = "okay";
-	firmware-name = "qcom/sa8155p/cdsp.mdt";
+	firmware-name = "qcom/sa8155p/cdsp.mbn";
 };
 
 &sdhc_2 {
@@ -429,8 +428,8 @@
 &ufs_mem_phy {
 	status = "okay";
 
-	vdda-phy-supply = <&vreg_l8c_1p2>;
-	vdda-pll-supply = <&vreg_l5a_0p88>;
+	vdda-phy-supply = <&vreg_l5a_0p88>;
+	vdda-pll-supply = <&vreg_l8c_1p2>;
 };
 
 &usb_1 {
@@ -475,8 +474,8 @@
 
 &usb_2_qmpphy {
 	status = "okay";
-	vdda-phy-supply = <&vreg_l8c_1p2>;
-	vdda-pll-supply = <&vdda_usb_ss_dp_core_1>;
+	vdda-phy-supply = <&vdda_usb_ss_dp_core_1>;
+	vdda-pll-supply = <&vreg_l8c_1p2>;
 };
 
 &pcie0 {

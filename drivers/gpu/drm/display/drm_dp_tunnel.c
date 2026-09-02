@@ -3,6 +3,7 @@
  * Copyright © 2023 Intel Corporation
  */
 
+#include <linux/export.h>
 #include <linux/ref_tracker.h>
 #include <linux/types.h>
 
@@ -110,6 +111,8 @@
 	DPTUN_REG(DP_ALLOCATED_BW) | \
 	DPTUN_REG(DP_TUNNELING_MAX_LINK_RATE) | \
 	DPTUN_REG(DP_TUNNELING_MAX_LANE_COUNT) | \
+	DPTUN_REG(DP_TUNNELING_MAIN_LINK_CHANNEL_CODING) | \
+	DPTUN_REG(DP_TUNNELING_128B132B_LINK_RATE) | \
 	DPTUN_REG(DP_DPTX_BW_ALLOCATION_MODE_CONTROL))
 
 static const DECLARE_BITMAP(dptun_info_regs, 64) = {
@@ -139,15 +142,19 @@ struct drm_dp_tunnel {
 	int estimated_bw;
 	int allocated_bw;
 
+	u8 dprx_128b132b_rates;
 	int max_dprx_rate;
 	u8 max_dprx_lane_count;
 
 	u8 adapter_id;
 
+	bool dprx_128b132b_support:1;
+	bool dprx_128b132b_lane0_mapping_support:1;
 	bool bw_alloc_supported:1;
 	bool bw_alloc_enabled:1;
 	bool has_io_error:1;
 	bool destroyed:1;
+	bool pr_optimization_support:1;
 };
 
 struct drm_dp_tunnel_group_state;
@@ -222,7 +229,7 @@ static int read_tunnel_regs(struct drm_dp_aux *aux, struct drm_dp_tunnel_regs *r
 	while ((len = next_reg_area(&offset))) {
 		int address = DP_TUNNELING_BASE + offset;
 
-		if (drm_dp_dpcd_read(aux, address, tunnel_reg_ptr(regs, address), len) < 0)
+		if (drm_dp_dpcd_read_data(aux, address, tunnel_reg_ptr(regs, address), len) < 0)
 			return -EIO;
 
 		offset += len;
@@ -258,9 +265,46 @@ static int tunnel_reg_bw_granularity(const struct drm_dp_tunnel_regs *regs)
 	return (250000 << gr) / 8;
 }
 
+static bool tunnel_reg_dprx_128b132b_support(const struct drm_dp_tunnel_regs *regs)
+{
+	return tunnel_reg(regs, DP_TUNNELING_MAIN_LINK_CHANNEL_CODING) & DP_128B132B_DP_SUPPORTED;
+}
+
+static bool tunnel_reg_dprx_128b132b_lane0_mapping_support(const struct drm_dp_tunnel_regs *regs)
+{
+	return tunnel_reg(regs, DP_TUNNELING_128B132B_LINK_RATE) &
+	       DP_TUNNELING_128B132B_LL_LANE0_MAPPING_SUPPORT;
+}
+
+static u8 tunnel_reg_dprx_128b132b_rates(const struct drm_dp_tunnel_regs *regs)
+{
+	if (!tunnel_reg_dprx_128b132b_support(regs))
+		return 0;
+
+	return tunnel_reg(regs, DP_TUNNELING_128B132B_LINK_RATE) &
+	       DP_TUNNELING_128B132B_LINK_RATE_MASK;
+}
+
+static u8 max_128b132b_rate(u8 rates)
+{
+	if (rates & DP_TUNNELING_20GBPS_PER_LANE_SUPPORT)
+		return DP_TUNNELING_20GBPS_PER_LANE_SUPPORT;
+	else if (rates & DP_TUNNELING_13_5GBPS_PER_LANE_SUPPORT)
+		return DP_TUNNELING_13_5GBPS_PER_LANE_SUPPORT;
+	else if (rates & DP_TUNNELING_10GBPS_PER_LANE_SUPPORT)
+		return DP_TUNNELING_10GBPS_PER_LANE_SUPPORT;
+
+	WARN_ON(rates);
+
+	return 0;
+}
+
 static int tunnel_reg_max_dprx_rate(const struct drm_dp_tunnel_regs *regs)
 {
-	u8 bw_code = tunnel_reg(regs, DP_TUNNELING_MAX_LINK_RATE);
+	u8 bw_code = max_128b132b_rate(tunnel_reg_dprx_128b132b_rates(regs));
+
+	if (!bw_code)
+		bw_code = tunnel_reg(regs, DP_TUNNELING_MAX_LINK_RATE);
 
 	return drm_dp_bw_code_to_link_rate(bw_code);
 }
@@ -475,7 +519,7 @@ create_tunnel(struct drm_dp_tunnel_mgr *mgr,
 	u8 drv_group_id = tunnel_reg_drv_group_id(regs);
 	struct drm_dp_tunnel *tunnel;
 
-	tunnel = kzalloc(sizeof(*tunnel), GFP_KERNEL);
+	tunnel = kzalloc_obj(*tunnel);
 	if (!tunnel)
 		return NULL;
 
@@ -507,6 +551,8 @@ create_tunnel(struct drm_dp_tunnel_mgr *mgr,
 
 	tunnel->bw_alloc_supported = tunnel_reg_bw_alloc_supported(regs);
 	tunnel->bw_alloc_enabled = tunnel_reg_bw_alloc_enabled(regs);
+	tunnel->pr_optimization_support = tunnel_reg(regs, DP_TUNNELING_CAPABILITIES) &
+					  DP_PANEL_REPLAY_OPTIMIZATION_SUPPORT;
 
 	if (!add_tunnel_to_group(mgr, drv_group_id, tunnel)) {
 		kfree(tunnel);
@@ -701,6 +747,23 @@ read_and_verify_tunnel_regs(struct drm_dp_tunnel *tunnel,
 static bool update_dprx_caps(struct drm_dp_tunnel *tunnel, const struct drm_dp_tunnel_regs *regs)
 {
 	bool changed = false;
+
+	if (tunnel_reg_dprx_128b132b_support(regs) != tunnel->dprx_128b132b_support) {
+		tunnel->dprx_128b132b_support = tunnel_reg_dprx_128b132b_support(regs);
+		changed = true;
+	}
+
+	if (tunnel_reg_dprx_128b132b_lane0_mapping_support(regs) !=
+	    tunnel->dprx_128b132b_lane0_mapping_support) {
+		tunnel->dprx_128b132b_lane0_mapping_support =
+			tunnel_reg_dprx_128b132b_lane0_mapping_support(regs);
+		changed = true;
+	}
+
+	if (tunnel_reg_dprx_128b132b_rates(regs) != tunnel->dprx_128b132b_rates) {
+		tunnel->dprx_128b132b_rates = tunnel_reg_dprx_128b132b_rates(regs);
+		changed = true;
+	}
 
 	if (tunnel_reg_max_dprx_rate(regs) != tunnel->max_dprx_rate) {
 		tunnel->max_dprx_rate = tunnel_reg_max_dprx_rate(regs);
@@ -913,7 +976,7 @@ static int set_bw_alloc_mode(struct drm_dp_tunnel *tunnel, bool enable)
 	u8 mask = DP_DISPLAY_DRIVER_BW_ALLOCATION_MODE_ENABLE | DP_UNMASK_BW_ALLOCATION_IRQ;
 	u8 val;
 
-	if (drm_dp_dpcd_readb(tunnel->aux, DP_DPTX_BW_ALLOCATION_MODE_CONTROL, &val) < 0)
+	if (drm_dp_dpcd_read_byte(tunnel->aux, DP_DPTX_BW_ALLOCATION_MODE_CONTROL, &val) < 0)
 		goto out_err;
 
 	if (enable)
@@ -921,7 +984,7 @@ static int set_bw_alloc_mode(struct drm_dp_tunnel *tunnel, bool enable)
 	else
 		val &= ~mask;
 
-	if (drm_dp_dpcd_writeb(tunnel->aux, DP_DPTX_BW_ALLOCATION_MODE_CONTROL, val) < 0)
+	if (drm_dp_dpcd_write_byte(tunnel->aux, DP_DPTX_BW_ALLOCATION_MODE_CONTROL, val) < 0)
 		goto out_err;
 
 	tunnel->bw_alloc_enabled = enable;
@@ -1035,11 +1098,25 @@ bool drm_dp_tunnel_bw_alloc_is_enabled(const struct drm_dp_tunnel *tunnel)
 }
 EXPORT_SYMBOL(drm_dp_tunnel_bw_alloc_is_enabled);
 
+/**
+ * drm_dp_tunnel_pr_optimization_supported - Query the PR BW optimization support
+ * @tunnel: Tunnel object
+ *
+ * Query if the PR BW optimization is supported for @tunnel.
+ *
+ * Returns %true if the PR BW optimiation is supported for @tunnel.
+ */
+bool drm_dp_tunnel_pr_optimization_supported(const struct drm_dp_tunnel *tunnel)
+{
+	return tunnel && tunnel->pr_optimization_support;
+}
+EXPORT_SYMBOL(drm_dp_tunnel_pr_optimization_supported);
+
 static int clear_bw_req_state(struct drm_dp_aux *aux)
 {
 	u8 bw_req_mask = DP_BW_REQUEST_SUCCEEDED | DP_BW_REQUEST_FAILED;
 
-	if (drm_dp_dpcd_writeb(aux, DP_TUNNELING_STATUS, bw_req_mask) < 0)
+	if (drm_dp_dpcd_write_byte(aux, DP_TUNNELING_STATUS, bw_req_mask) < 0)
 		return -EIO;
 
 	return 0;
@@ -1052,7 +1129,7 @@ static int bw_req_complete(struct drm_dp_aux *aux, bool *status_changed)
 	u8 val;
 	int err;
 
-	if (drm_dp_dpcd_readb(aux, DP_TUNNELING_STATUS, &val) < 0)
+	if (drm_dp_dpcd_read_byte(aux, DP_TUNNELING_STATUS, &val) < 0)
 		return -EIO;
 
 	*status_changed = val & status_change_mask;
@@ -1095,7 +1172,7 @@ static int allocate_tunnel_bw(struct drm_dp_tunnel *tunnel, int bw)
 	if (err)
 		goto out;
 
-	if (drm_dp_dpcd_writeb(tunnel->aux, DP_REQUEST_BW, request_bw) < 0) {
+	if (drm_dp_dpcd_write_byte(tunnel->aux, DP_REQUEST_BW, request_bw) < 0) {
 		err = -EIO;
 		goto out;
 	}
@@ -1196,13 +1273,13 @@ static int check_and_clear_status_change(struct drm_dp_tunnel *tunnel)
 	u8 mask = DP_BW_ALLOCATION_CAPABILITY_CHANGED | DP_ESTIMATED_BW_CHANGED;
 	u8 val;
 
-	if (drm_dp_dpcd_readb(tunnel->aux, DP_TUNNELING_STATUS, &val) < 0)
+	if (drm_dp_dpcd_read_byte(tunnel->aux, DP_TUNNELING_STATUS, &val) < 0)
 		goto out_err;
 
 	val &= mask;
 
 	if (val) {
-		if (drm_dp_dpcd_writeb(tunnel->aux, DP_TUNNELING_STATUS, val) < 0)
+		if (drm_dp_dpcd_write_byte(tunnel->aux, DP_TUNNELING_STATUS, val) < 0)
 			goto out_err;
 
 		return 1;
@@ -1215,7 +1292,7 @@ static int check_and_clear_status_change(struct drm_dp_tunnel *tunnel)
 	 * Check for estimated BW changes explicitly to account for lost
 	 * BW change notifications.
 	 */
-	if (drm_dp_dpcd_readb(tunnel->aux, DP_ESTIMATED_BW, &val) < 0)
+	if (drm_dp_dpcd_read_byte(tunnel->aux, DP_ESTIMATED_BW, &val) < 0)
 		goto out_err;
 
 	if (val * tunnel->bw_granularity != tunnel->estimated_bw)
@@ -1300,7 +1377,7 @@ int drm_dp_tunnel_handle_irq(struct drm_dp_tunnel_mgr *mgr, struct drm_dp_aux *a
 {
 	u8 val;
 
-	if (drm_dp_dpcd_readb(aux, DP_TUNNELING_STATUS, &val) < 0)
+	if (drm_dp_dpcd_read_byte(aux, DP_TUNNELING_STATUS, &val) < 0)
 		return -EIO;
 
 	if (val & (DP_BW_REQUEST_SUCCEEDED | DP_BW_REQUEST_FAILED))
@@ -1312,6 +1389,61 @@ int drm_dp_tunnel_handle_irq(struct drm_dp_tunnel_mgr *mgr, struct drm_dp_aux *a
 	return 0;
 }
 EXPORT_SYMBOL(drm_dp_tunnel_handle_irq);
+
+/**
+ * drm_dp_tunnel_128b132b_supported - Query if 128b132b is supported by the tunnel's DPRX
+ * @tunnel: Tunnel object
+ *
+ * The function is used to query if 128b132b is supported by the DPRX connected
+ * to @tunnel.
+ *
+ * Returns %true if 128b132b is supported by the DPRX.
+ */
+bool drm_dp_tunnel_128b132b_supported(const struct drm_dp_tunnel *tunnel)
+{
+	return tunnel->dprx_128b132b_support;
+}
+EXPORT_SYMBOL(drm_dp_tunnel_128b132b_supported);
+
+/**
+ * drm_dp_tunnel_128b132b_lane0_mapping_supported - Check 128b/132b lane 0 mapping support
+ * @tunnel: Tunnel object
+ *
+ * Check whether the DP-out adapter always maps lane 0 as expected by the
+ * DPRX on a tunneled 128b/132b link. If the function returns %true, one- and
+ * two-lane configurations with UHBR link rates can always be used. If it
+ * returns %false, using one or two lanes with UHBR link rates may cause a
+ * lane-count conversion failure in the DPRX, requiring corrective action by
+ * the source during link training. See DP Standard v2.1b, section
+ * 3.5.2.16.3, 128b/132b DPRX Lane Count Conversion Failure Indication and
+ * Corrective Action.
+ *
+ * A four-lane configuration can always be used, provided that the DPRX
+ * supports it, regardless of the function's return value.
+ *
+ * Returns %true if the DP-out adapter supports the 128b/132b lane 0 mapping.
+ */
+bool drm_dp_tunnel_128b132b_lane0_mapping_supported(const struct drm_dp_tunnel *tunnel)
+{
+	return tunnel->dprx_128b132b_lane0_mapping_support;
+}
+EXPORT_SYMBOL(drm_dp_tunnel_128b132b_lane0_mapping_supported);
+
+/**
+ * drm_dp_tunnel_128b132b_dprx_rates - Query the supported 128b132b rates of the tunnel's DPRX
+ * @tunnel: Tunnel object
+ *
+ * The function is used to query the supported 128b132b rates of the DPRX connected
+ * to @tunnel. Note that the related DP_128B132B_SUPPROTED_LINK_RATES DPCD
+ * register will indicate no supported 128B132B rates for a tunneled DPRX.
+ *
+ * Returns the mask of supported 128b132b rates.
+ */
+u8 drm_dp_tunnel_128b132b_dprx_rates(const struct drm_dp_tunnel *tunnel)
+{
+	return tunnel->dprx_128b132b_rates;
+}
+EXPORT_SYMBOL(drm_dp_tunnel_128b132b_dprx_rates);
 
 /**
  * drm_dp_tunnel_max_dprx_rate - Query the maximum rate of the tunnel's DPRX
@@ -1368,7 +1500,7 @@ int drm_dp_tunnel_available_bw(const struct drm_dp_tunnel *tunnel)
 EXPORT_SYMBOL(drm_dp_tunnel_available_bw);
 
 static struct drm_dp_tunnel_group_state *
-drm_dp_tunnel_atomic_get_group_state(struct drm_atomic_state *state,
+drm_dp_tunnel_atomic_get_group_state(struct drm_atomic_commit *state,
 				     const struct drm_dp_tunnel *tunnel)
 {
 	return (struct drm_dp_tunnel_group_state *)
@@ -1386,7 +1518,7 @@ add_tunnel_state(struct drm_dp_tunnel_group_state *group_state,
 		       "Adding state for tunnel %p to group state %p\n",
 		       tunnel, group_state);
 
-	tunnel_state = kzalloc(sizeof(*tunnel_state), GFP_KERNEL);
+	tunnel_state = kzalloc_obj(*tunnel_state);
 	if (!tunnel_state)
 		return NULL;
 
@@ -1457,7 +1589,7 @@ tunnel_group_duplicate_state(struct drm_private_obj *obj)
 	struct drm_dp_tunnel_group_state *group_state;
 	struct drm_dp_tunnel_state *tunnel_state;
 
-	group_state = kzalloc(sizeof(*group_state), GFP_KERNEL);
+	group_state = kzalloc_obj(*group_state);
 	if (!group_state)
 		return NULL;
 
@@ -1496,7 +1628,22 @@ static void tunnel_group_destroy_state(struct drm_private_obj *obj, struct drm_p
 	free_group_state(to_group_state(state));
 }
 
+static struct drm_private_state *tunnel_group_atomic_create_state(struct drm_private_obj *obj)
+{
+	struct drm_dp_tunnel_group_state *group_state;
+
+	group_state = kzalloc_obj(*group_state);
+	if (!group_state)
+		return ERR_PTR(-ENOMEM);
+
+	__drm_atomic_helper_private_obj_create_state(obj, &group_state->base);
+	INIT_LIST_HEAD(&group_state->tunnel_states);
+
+	return &group_state->base;
+}
+
 static const struct drm_private_state_funcs tunnel_group_funcs = {
+	.atomic_create_state = tunnel_group_atomic_create_state,
 	.atomic_duplicate_state = tunnel_group_duplicate_state,
 	.atomic_destroy_state = tunnel_group_destroy_state,
 };
@@ -1512,7 +1659,7 @@ static const struct drm_private_state_funcs tunnel_group_funcs = {
  * Return the state or an ERR_PTR() error on failure.
  */
 struct drm_dp_tunnel_state *
-drm_dp_tunnel_atomic_get_state(struct drm_atomic_state *state,
+drm_dp_tunnel_atomic_get_state(struct drm_atomic_commit *state,
 			       struct drm_dp_tunnel *tunnel)
 {
 	struct drm_dp_tunnel_group_state *group_state;
@@ -1540,7 +1687,7 @@ EXPORT_SYMBOL(drm_dp_tunnel_atomic_get_state);
  * Return the old state or NULL if the tunnel's atomic state is not in @state.
  */
 struct drm_dp_tunnel_state *
-drm_dp_tunnel_atomic_get_old_state(struct drm_atomic_state *state,
+drm_dp_tunnel_atomic_get_old_state(struct drm_atomic_commit *state,
 				   const struct drm_dp_tunnel *tunnel)
 {
 	struct drm_dp_tunnel_group_state *old_group_state;
@@ -1564,7 +1711,7 @@ EXPORT_SYMBOL(drm_dp_tunnel_atomic_get_old_state);
  * Return the new state or NULL if the tunnel's atomic state is not in @state.
  */
 struct drm_dp_tunnel_state *
-drm_dp_tunnel_atomic_get_new_state(struct drm_atomic_state *state,
+drm_dp_tunnel_atomic_get_new_state(struct drm_atomic_commit *state,
 				   const struct drm_dp_tunnel *tunnel)
 {
 	struct drm_dp_tunnel_group_state *new_group_state;
@@ -1580,19 +1727,11 @@ EXPORT_SYMBOL(drm_dp_tunnel_atomic_get_new_state);
 
 static bool init_group(struct drm_dp_tunnel_mgr *mgr, struct drm_dp_tunnel_group *group)
 {
-	struct drm_dp_tunnel_group_state *group_state;
-
-	group_state = kzalloc(sizeof(*group_state), GFP_KERNEL);
-	if (!group_state)
-		return false;
-
-	INIT_LIST_HEAD(&group_state->tunnel_states);
-
 	group->mgr = mgr;
 	group->available_bw = -1;
 	INIT_LIST_HEAD(&group->tunnels);
 
-	drm_atomic_private_obj_init(mgr->dev, &group->base, &group_state->base,
+	drm_atomic_private_obj_init(mgr->dev, &group->base,
 				    &tunnel_group_funcs);
 
 	return true;
@@ -1643,7 +1782,7 @@ static int resize_bw_array(struct drm_dp_tunnel_state *tunnel_state,
 	if (old_mask == new_mask)
 		return 0;
 
-	new_bws = kcalloc(hweight32(new_mask), sizeof(*new_bws), GFP_KERNEL);
+	new_bws = kzalloc_objs(*new_bws, hweight32(new_mask));
 	if (!new_bws)
 		return -ENOMEM;
 
@@ -1698,7 +1837,7 @@ static int clear_stream_bw(struct drm_dp_tunnel_state *tunnel_state,
  *
  * Returns 0 in case of success, a negative error code otherwise.
  */
-int drm_dp_tunnel_atomic_set_stream_bw(struct drm_atomic_state *state,
+int drm_dp_tunnel_atomic_set_stream_bw(struct drm_atomic_commit *state,
 				       struct drm_dp_tunnel *tunnel,
 				       u8 stream_id, int bw)
 {
@@ -1775,7 +1914,7 @@ EXPORT_SYMBOL(drm_dp_tunnel_atomic_get_required_bw);
  * Return 0 in case of success - with the stream IDs in @stream_mask - or a
  * negative error code in case of failure.
  */
-int drm_dp_tunnel_atomic_get_group_streams_in_state(struct drm_atomic_state *state,
+int drm_dp_tunnel_atomic_get_group_streams_in_state(struct drm_atomic_commit *state,
 						    const struct drm_dp_tunnel *tunnel,
 						    u32 *stream_mask)
 {
@@ -1853,7 +1992,7 @@ drm_dp_tunnel_atomic_check_group_bw(struct drm_dp_tunnel_group_state *new_group_
  * check failed - with @failed_stream_mask containing the streams failing the
  * check - or a negative error code otherwise.
  */
-int drm_dp_tunnel_atomic_check_stream_bws(struct drm_atomic_state *state,
+int drm_dp_tunnel_atomic_check_stream_bws(struct drm_atomic_commit *state,
 					  u32 *failed_stream_mask)
 {
 	struct drm_dp_tunnel_group_state *new_group_state;
@@ -1905,14 +2044,14 @@ drm_dp_tunnel_mgr_create(struct drm_device *dev, int max_group_count)
 	struct drm_dp_tunnel_mgr *mgr;
 	int i;
 
-	mgr = kzalloc(sizeof(*mgr), GFP_KERNEL);
+	mgr = kzalloc_obj(*mgr);
 	if (!mgr)
 		return ERR_PTR(-ENOMEM);
 
 	mgr->dev = dev;
 	init_waitqueue_head(&mgr->bw_req_queue);
 
-	mgr->groups = kcalloc(max_group_count, sizeof(*mgr->groups), GFP_KERNEL);
+	mgr->groups = kzalloc_objs(*mgr->groups, max_group_count);
 	if (!mgr->groups) {
 		kfree(mgr);
 
@@ -1920,7 +2059,7 @@ drm_dp_tunnel_mgr_create(struct drm_device *dev, int max_group_count)
 	}
 
 #ifdef CONFIG_DRM_DISPLAY_DP_TUNNEL_STATE_DEBUG
-	ref_tracker_dir_init(&mgr->ref_tracker, 16, "dptun");
+	ref_tracker_dir_init(&mgr->ref_tracker, 16, "drm_dptun");
 #endif
 
 	for (i = 0; i < max_group_count; i++) {

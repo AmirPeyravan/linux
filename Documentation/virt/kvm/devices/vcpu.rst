@@ -39,6 +39,10 @@ number for this vcpu. This interrupt could be a PPI or SPI, but the interrupt
 type must be same for each vcpu. As a PPI, the interrupt number is the same for
 all vcpus, while as an SPI it must be a separate number per vcpu.
 
+For GICv5-based guests, the architected PPI (23) must be used, and must be
+communicated as the full GICv5-style Interrupt ID, i.e., 0x20000017. This ioctl
+can be omitted altogether for a GICv5-based guest.
+
 1.2 ATTRIBUTE: KVM_ARM_VCPU_PMU_V3_INIT
 ---------------------------------------
 
@@ -49,14 +53,18 @@ Returns:
 	 =======  ======================================================
 	 -EEXIST  Interrupt number already used
 	 -ENODEV  PMUv3 not supported or GIC not initialized
-	 -ENXIO   PMUv3 not supported, missing VCPU feature or interrupt
-		  number not set
+	 -ENXIO   PMUv3 not supported, missing VCPU feature, missing
+                  hardware PMU, or interrupt number not set (non-GICv5
+                  guests, only)
 	 -EBUSY   PMUv3 already initialized
 	 =======  ======================================================
 
 Request the initialization of the PMUv3.  If using the PMUv3 with an in-kernel
 virtual GIC implementation, this must be done after initializing the in-kernel
 irqchip.
+
+When the KVM_ARM_VCPU_PMU_V3_STRICT vCPU feature is enabled this must be done
+after selecting a hardware PMU.
 
 1.3 ATTRIBUTE: KVM_ARM_VCPU_PMU_V3_FILTER
 -----------------------------------------
@@ -104,6 +112,9 @@ hardware event. Filtering event 0x1E (CHAIN) has no effect either, as it
 isn't strictly speaking an event. Filtering the cycle counter is possible
 using event 0x11 (CPU_CYCLES).
 
+When the KVM_ARM_VCPU_PMU_V3_STRICT vCPU feature is enabled this must be done
+after selecting a hardware PMU.
+
 1.4 ATTRIBUTE: KVM_ARM_VCPU_PMU_V3_SET_PMU
 ------------------------------------------
 
@@ -136,6 +147,30 @@ by the PMU will fail and KVM_RUN will return with
 exit_reason = KVM_EXIT_FAIL_ENTRY and populate the fail_entry struct by setting
 hardare_entry_failure_reason field to KVM_EXIT_FAIL_ENTRY_CPU_UNSUPPORTED and
 the cpu field to the processor id.
+
+1.5 ATTRIBUTE: KVM_ARM_VCPU_PMU_V3_SET_NR_COUNTERS
+--------------------------------------------------
+
+:Parameters: in kvm_device_attr.addr the address to an unsigned int
+	     representing the maximum value taken by PMCR_EL0.N
+
+:Returns:
+
+	 =======  ====================================================
+	 -EBUSY   PMUv3 already initialized, a VCPU has already run or
+                  an event filter has already been set
+	 -EFAULT  Error accessing the value pointed to by addr
+	 -ENODEV  PMUv3 not supported or GIC not initialized
+	 -EINVAL  No PMUv3 explicitly selected, or value of N out of
+	 	  range
+	 =======  ====================================================
+
+Set the number of implemented event counters in the virtual PMU. This
+mandates that a PMU has explicitly been selected via
+KVM_ARM_VCPU_PMU_V3_SET_PMU, and will fail when no PMU has been
+explicitly selected, or the number of counters is out of range for the
+selected PMU. Selecting a new PMU cancels the effect of setting this
+attribute.
 
 2. GROUP: KVM_ARM_VCPU_TIMER_CTRL
 =================================

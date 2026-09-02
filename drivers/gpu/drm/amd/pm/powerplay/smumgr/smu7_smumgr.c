@@ -46,42 +46,6 @@ static int smu7_set_smc_sram_address(struct pp_hwmgr *hwmgr, uint32_t smc_addr, 
 }
 
 
-int smu7_copy_bytes_from_smc(struct pp_hwmgr *hwmgr, uint32_t smc_start_address, uint32_t *dest, uint32_t byte_count, uint32_t limit)
-{
-	uint32_t data;
-	uint32_t addr;
-	uint8_t *dest_byte;
-	uint8_t i, data_byte[4] = {0};
-	uint32_t *pdata = (uint32_t *)&data_byte;
-
-	PP_ASSERT_WITH_CODE((0 == (3 & smc_start_address)), "SMC address must be 4 byte aligned.", return -EINVAL);
-	PP_ASSERT_WITH_CODE((limit > (smc_start_address + byte_count)), "SMC address is beyond the SMC RAM area.", return -EINVAL);
-
-	addr = smc_start_address;
-
-	while (byte_count >= 4) {
-		smu7_read_smc_sram_dword(hwmgr, addr, &data, limit);
-
-		*dest = PP_SMC_TO_HOST_UL(data);
-
-		dest += 1;
-		byte_count -= 4;
-		addr += 4;
-	}
-
-	if (byte_count) {
-		smu7_read_smc_sram_dword(hwmgr, addr, &data, limit);
-		*pdata = PP_SMC_TO_HOST_UL(data);
-	/* Cast dest into byte type in dest_byte.  This way, we don't overflow if the allocated memory is not 4-byte aligned. */
-		dest_byte = (uint8_t *)dest;
-		for (i = 0; i < byte_count; i++)
-			dest_byte[i] = data_byte[i];
-	}
-
-	return 0;
-}
-
-
 int smu7_copy_bytes_to_smc(struct pp_hwmgr *hwmgr, uint32_t smc_start_address,
 				const uint8_t *src, uint32_t byte_count, uint32_t limit)
 {
@@ -170,14 +134,6 @@ int smu7_send_msg_to_smc(struct pp_hwmgr *hwmgr, uint16_t msg)
 
 	PHM_WAIT_FIELD_UNEQUAL(hwmgr, SMC_RESP_0, SMC_RESP, 0);
 
-	ret = PHM_READ_FIELD(hwmgr->device, SMC_RESP_0, SMC_RESP);
-
-	if (ret == 0xFE)
-		dev_dbg(adev->dev, "last message was not supported\n");
-	else if (ret != 1)
-		dev_info(adev->dev,
-			"\nlast message was failed ret is %d\n", ret);
-
 	cgs_write_register(hwmgr->device, mmSMC_RESP_0, 0);
 	cgs_write_register(hwmgr->device, mmSMC_MESSAGE_0, msg);
 
@@ -185,13 +141,16 @@ int smu7_send_msg_to_smc(struct pp_hwmgr *hwmgr, uint16_t msg)
 
 	ret = PHM_READ_FIELD(hwmgr->device, SMC_RESP_0, SMC_RESP);
 
-	if (ret == 0xFE)
-		dev_dbg(adev->dev, "message %x was not supported\n", msg);
-	else if (ret != 1)
-		dev_dbg(adev->dev,
-			"failed to send message %x ret is %d \n",  msg, ret);
-
-	return 0;
+	switch (ret) {
+	case 1:
+		return 0;
+	case 0xFE:
+		dev_dbg(adev->dev, "SMU message %#x was not supported\n", msg);
+		return -EOPNOTSUPP;
+	default:
+		dev_info(adev->dev, "SMU message %#x failed: response is %d\n", msg, ret);
+		return ret != 0xFFFF ? -EIO : -ENXIO;
+	}
 }
 
 int smu7_send_msg_to_smc_with_parameter(struct pp_hwmgr *hwmgr, uint16_t msg, uint32_t parameter)
@@ -369,7 +328,7 @@ int smu7_request_smu_load_fw(struct pp_hwmgr *hwmgr)
 	if (!smu_data->toc) {
 		struct SMU_DRAMData_TOC *toc;
 
-		smu_data->toc = kzalloc(sizeof(struct SMU_DRAMData_TOC), GFP_KERNEL);
+		smu_data->toc = kzalloc_obj(struct SMU_DRAMData_TOC);
 		if (!smu_data->toc)
 			return -ENOMEM;
 		toc = smu_data->toc;
@@ -437,7 +396,7 @@ failed:
 int smu7_check_fw_load_finish(struct pp_hwmgr *hwmgr, uint32_t fw_type)
 {
 	struct smu7_smumgr *smu_data = (struct smu7_smumgr *)(hwmgr->smu_backend);
-	uint32_t ret;
+	int ret;
 
 	ret = phm_wait_on_indirect_register(hwmgr, mmSMC_IND_INDEX_11,
 					smu_data->soft_regs_start + smum_get_offsetof(hwmgr,

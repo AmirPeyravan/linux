@@ -20,39 +20,9 @@
 
 #include <linux/stddef.h>
 
-/*
- * Alternative inline assembly for SMP.
- *
- * The LOCK_PREFIX macro defined here replaces the LOCK and
- * LOCK_PREFIX macros used everywhere in the source tree.
- *
- * SMP alternatives use the same data structures as the other
- * alternatives and the X86_FEATURE_UP flag to indicate the case of a
- * UP system running a SMP kernel.  The existing apply_alternatives()
- * works fine for patching a SMP kernel for UP.
- *
- * The SMP alternative tables can be kept after boot and contain both
- * UP and SMP versions of the instructions to allow switching back to
- * SMP at runtime, when hotplugging in a new CPU, which is especially
- * useful in virtualized environments.
- *
- * The very common lock prefix is handled as special case in a
- * separate table which is a pure address list without replacement ptr
- * and size information.  That keeps the table sizes small.
- */
-
 #ifdef CONFIG_SMP
-#define LOCK_PREFIX_HERE \
-		".pushsection .smp_locks,\"a\"\n"	\
-		".balign 4\n"				\
-		".long 671f - .\n" /* offset */		\
-		".popsection\n"				\
-		"671:"
-
-#define LOCK_PREFIX LOCK_PREFIX_HERE "\n\tlock "
-
-#else /* ! CONFIG_SMP */
-#define LOCK_PREFIX_HERE ""
+#define LOCK_PREFIX "lock "
+#else
 #define LOCK_PREFIX ""
 #endif
 
@@ -82,6 +52,11 @@ struct alt_instr {
 } __packed;
 
 extern struct alt_instr __alt_instructions[], __alt_instructions_end[];
+
+extern s32 __retpoline_sites[], __retpoline_sites_end[];
+extern s32 __return_sites[],	__return_sites_end[];
+extern s32 __cfi_sites[],	__cfi_sites_end[];
+extern s32 __ibt_endbr_seal[],	__ibt_endbr_seal_end[];
 
 /*
  * Debug flag that can be tested to see whether alternative
@@ -156,26 +131,6 @@ static __always_inline bool cpu_wants_rethunk_at(void *addr)
 }
 #endif
 
-#ifdef CONFIG_SMP
-extern void alternatives_smp_module_add(struct module *mod, char *name,
-					void *locks, void *locks_end,
-					void *text, void *text_end);
-extern void alternatives_smp_module_del(struct module *mod);
-extern void alternatives_enable_smp(void);
-extern int alternatives_text_reserved(void *start, void *end);
-extern bool skip_smp_alternatives;
-#else
-static inline void alternatives_smp_module_add(struct module *mod, char *name,
-					       void *locks, void *locks_end,
-					       void *text, void *text_end) {}
-static inline void alternatives_smp_module_del(struct module *mod) {}
-static inline void alternatives_enable_smp(void) {}
-static inline int alternatives_text_reserved(void *start, void *end)
-{
-	return 0;
-}
-#endif	/* CONFIG_SMP */
-
 #define ALT_CALL_INSTR		"call BUG_func"
 
 #define alt_slen		"772b-771b"
@@ -191,7 +146,8 @@ static inline int alternatives_text_reserved(void *start, void *end)
 	"773:\n"
 
 #define ALTINSTR_ENTRY(ft_flags)					      \
-	".pushsection .altinstructions,\"a\"\n"				      \
+	".pushsection .altinstructions, \"aM\", @progbits, "		      \
+		      __stringify(ALT_INSTR_SIZE) "\n"			      \
 	" .long 771b - .\n"				/* label           */ \
 	" .long 774f - .\n"				/* new instruction */ \
 	" .4byte " __stringify(ft_flags) "\n"		/* feature + flags */ \
@@ -201,6 +157,7 @@ static inline int alternatives_text_reserved(void *start, void *end)
 
 #define ALTINSTR_REPLACEMENT(newinstr)		/* replacement */	\
 	".pushsection .altinstr_replacement, \"ax\"\n"			\
+	ANNOTATE_DATA_SPECIAL "\n"					\
 	"# ALT: replacement\n"						\
 	"774:\n\t" newinstr "\n775:\n"					\
 	".popsection\n"
@@ -311,18 +268,11 @@ void nop_func(void);
 
 #else /* __ASSEMBLER__ */
 
+.macro LOCK_PREFIX
 #ifdef CONFIG_SMP
-	.macro LOCK_PREFIX
-672:	lock
-	.pushsection .smp_locks,"a"
-	.balign 4
-	.long 672b - .
-	.popsection
-	.endm
-#else
-	.macro LOCK_PREFIX
-	.endm
+	lock
 #endif
+	.endm
 
 /*
  * Issue one struct alt_instr descriptor entry (need to put it into
@@ -354,11 +304,12 @@ void nop_func(void);
 741:									\
 	.skip -(((744f-743f)-(741b-740b)) > 0) * ((744f-743f)-(741b-740b)),0x90	;\
 742:									\
-	.pushsection .altinstructions,"a" ;				\
+	.pushsection .altinstructions, "aM", @progbits, ALT_INSTR_SIZE ;\
 	altinstr_entry 740b,743f,flag,742b-740b,744f-743f ;		\
 	.popsection ;							\
 	.pushsection .altinstr_replacement,"ax"	;			\
 743:									\
+	ANNOTATE_DATA_SPECIAL ;						\
 	newinst	;							\
 744:									\
 	.popsection ;
@@ -366,11 +317,6 @@ void nop_func(void);
 .macro ALTERNATIVE oldinstr, newinstr, ft_flags
 	__ALTERNATIVE(\oldinstr, \newinstr, \ft_flags)
 .endm
-
-#define old_len			141b-140b
-#define new_len1		144f-143f
-#define new_len2		145f-144f
-#define new_len3		146f-145f
 
 /*
  * Same as ALTERNATIVE macro above but for two alternatives. If CPU

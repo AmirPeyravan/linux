@@ -63,7 +63,7 @@ static void cachefiles_read_complete(struct kiocb *iocb, long ret)
 				ret = -ESTALE;
 		}
 
-		ki->term_func(ki->term_func_priv, ret, ki->was_async);
+		ki->term_func(ki->term_func_priv, ret);
 	}
 
 	cachefiles_put_kiocb(ki);
@@ -93,7 +93,7 @@ static int cachefiles_read(struct netfs_cache_resources *cres,
 	object = cachefiles_cres_object(cres);
 	file = cachefiles_cres_file(cres);
 
-	_enter("%pD,%li,%llx,%zx/%llx",
+	_enter("%pD,%llu,%llx,%zx/%llx",
 	       file, file_inode(file)->i_ino, start_pos, len,
 	       i_size_read(file_inode(file)));
 
@@ -132,7 +132,7 @@ static int cachefiles_read(struct netfs_cache_resources *cres,
 	}
 
 	ret = -ENOMEM;
-	ki = kzalloc(sizeof(struct cachefiles_kiocb), GFP_KERNEL);
+	ki = kzalloc_obj(struct cachefiles_kiocb);
 	if (!ki)
 		goto presubmission_error;
 
@@ -188,7 +188,7 @@ in_progress:
 
 presubmission_error:
 	if (term_func)
-		term_func(term_func_priv, ret < 0 ? ret : skipped, false);
+		term_func(term_func_priv, ret < 0 ? ret : skipped);
 	return ret;
 }
 
@@ -214,7 +214,7 @@ static int cachefiles_query_occupancy(struct netfs_cache_resources *cres,
 	file = cachefiles_cres_file(cres);
 	granularity = max_t(size_t, object->volume->cache->bsize, granularity);
 
-	_enter("%pD,%li,%llx,%zx/%llx",
+	_enter("%pD,%llu,%llx,%zx/%llx",
 	       file, file_inode(file)->i_ino, start, len,
 	       i_size_read(file_inode(file)));
 
@@ -271,7 +271,7 @@ static void cachefiles_write_complete(struct kiocb *iocb, long ret)
 	atomic_long_sub(ki->b_writing, &object->volume->cache->b_writing);
 	set_bit(FSCACHE_COOKIE_HAVE_DATA, &object->cookie->flags);
 	if (ki->term_func)
-		ki->term_func(ki->term_func_priv, ret, ki->was_async);
+		ki->term_func(ki->term_func_priv, ret);
 	cachefiles_put_kiocb(ki);
 }
 
@@ -294,14 +294,14 @@ int __cachefiles_write(struct cachefiles_object *object,
 	fscache_count_write();
 	cache = object->volume->cache;
 
-	_enter("%pD,%li,%llx,%zx/%llx",
+	_enter("%pD,%llu,%llx,%zx/%llx",
 	       file, file_inode(file)->i_ino, start_pos, len,
 	       i_size_read(file_inode(file)));
 
-	ki = kzalloc(sizeof(struct cachefiles_kiocb), GFP_KERNEL);
+	ki = kzalloc_obj(struct cachefiles_kiocb);
 	if (!ki) {
 		if (term_func)
-			term_func(term_func_priv, -ENOMEM, false);
+			term_func(term_func_priv, -ENOMEM);
 		return -ENOMEM;
 	}
 
@@ -347,8 +347,6 @@ int __cachefiles_write(struct cachefiles_object *object,
 	default:
 		ki->was_async = false;
 		cachefiles_write_complete(&ki->iocb, ret);
-		if (ret > 0)
-			ret = 0;
 		break;
 	}
 
@@ -366,7 +364,7 @@ static int cachefiles_write(struct netfs_cache_resources *cres,
 {
 	if (!fscache_wait_for_operation(cres, FSCACHE_WANT_WRITE)) {
 		if (term_func)
-			term_func(term_func_priv, -ENOBUFS, false);
+			term_func(term_func_priv, -ENOBUFS);
 		trace_netfs_sreq(term_func_priv, netfs_sreq_trace_cache_nowrite);
 		return -ENOBUFS;
 	}
@@ -392,7 +390,6 @@ cachefiles_do_prepare_read(struct netfs_cache_resources *cres,
 	size_t len = *_len;
 	loff_t off, to;
 	ino_t ino = file ? file_inode(file)->i_ino : 0;
-	int rc;
 
 	_enter("%zx @%llx/%llx", len, start, i_size);
 
@@ -405,8 +402,7 @@ cachefiles_do_prepare_read(struct netfs_cache_resources *cres,
 	if (test_bit(FSCACHE_COOKIE_NO_DATA_TO_READ, &cookie->flags)) {
 		__set_bit(NETFS_SREQ_COPY_TO_CACHE, _flags);
 		why = cachefiles_trace_read_no_data;
-		if (!test_bit(NETFS_SREQ_ONDEMAND, _flags))
-			goto out_no_object;
+		goto out_no_object;
 	}
 
 	/* The object and the file may be being created in the background. */
@@ -423,7 +419,6 @@ cachefiles_do_prepare_read(struct netfs_cache_resources *cres,
 	object = cachefiles_cres_object(cres);
 	cache = object->volume->cache;
 	cachefiles_begin_secure(cache, &saved_cred);
-retry:
 	off = cachefiles_inject_read_error();
 	if (off == 0)
 		off = vfs_llseek(file, start, SEEK_DATA);
@@ -476,14 +471,6 @@ retry:
 
 download_and_store:
 	__set_bit(NETFS_SREQ_COPY_TO_CACHE, _flags);
-	if (test_bit(NETFS_SREQ_ONDEMAND, _flags)) {
-		rc = cachefiles_ondemand_read(object, start, len);
-		if (!rc) {
-			__clear_bit(NETFS_SREQ_ONDEMAND, _flags);
-			goto retry;
-		}
-		ret = NETFS_INVALID_READ;
-	}
 out:
 	cachefiles_end_secure(cache, saved_cred);
 out_no_object:
@@ -501,18 +488,6 @@ static enum netfs_io_source cachefiles_prepare_read(struct netfs_io_subrequest *
 	return cachefiles_do_prepare_read(&subreq->rreq->cache_resources,
 					  subreq->start, &subreq->len, i_size,
 					  &subreq->flags, subreq->rreq->inode->i_ino);
-}
-
-/*
- * Prepare an on-demand read operation, shortening it to a cached/uncached
- * boundary as appropriate.
- */
-static enum netfs_io_source
-cachefiles_prepare_ondemand_read(struct netfs_cache_resources *cres,
-				 loff_t start, size_t *_len, loff_t i_size,
-				 unsigned long *_flags, ino_t ino)
-{
-	return cachefiles_do_prepare_read(cres, start, _len, i_size, _flags, ino);
 }
 
 /*
@@ -665,7 +640,7 @@ static void cachefiles_issue_write(struct netfs_io_subrequest *subreq)
 		pre = CACHEFILES_DIO_BLOCK_SIZE - off;
 		if (pre >= len) {
 			fscache_count_dio_misfit();
-			netfs_write_subrequest_terminated(subreq, len, false);
+			netfs_write_subrequest_terminated(subreq, len);
 			return;
 		}
 		subreq->transferred += pre;
@@ -691,7 +666,7 @@ static void cachefiles_issue_write(struct netfs_io_subrequest *subreq)
 		len -= post;
 		if (len == 0) {
 			fscache_count_dio_misfit();
-			netfs_write_subrequest_terminated(subreq, post, false);
+			netfs_write_subrequest_terminated(subreq, post);
 			return;
 		}
 		iov_iter_truncate(&subreq->io_iter, len);
@@ -703,7 +678,7 @@ static void cachefiles_issue_write(struct netfs_io_subrequest *subreq)
 					 &start, &len, len, true);
 	cachefiles_end_secure(cache, saved_cred);
 	if (ret < 0) {
-		netfs_write_subrequest_terminated(subreq, ret, false);
+		netfs_write_subrequest_terminated(subreq, ret);
 		return;
 	}
 
@@ -733,7 +708,6 @@ static const struct netfs_cache_ops cachefiles_netfs_cache_ops = {
 	.prepare_read		= cachefiles_prepare_read,
 	.prepare_write		= cachefiles_prepare_write,
 	.prepare_write_subreq	= cachefiles_prepare_write_subreq,
-	.prepare_ondemand_read	= cachefiles_prepare_ondemand_read,
 	.query_occupancy	= cachefiles_query_occupancy,
 };
 

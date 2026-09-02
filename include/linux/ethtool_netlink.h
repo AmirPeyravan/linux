@@ -7,9 +7,6 @@
 #include <linux/ethtool.h>
 #include <linux/netdevice.h>
 
-#define __ETHTOOL_LINK_MODE_MASK_NWORDS \
-	DIV_ROUND_UP(__ETHTOOL_LINK_MODE_MASK_NBITS, 32)
-
 #define ETHTOOL_PAUSE_STAT_CNT	(__ETHTOOL_A_PAUSE_STAT_CNT -		\
 				 ETHTOOL_A_PAUSE_STAT_TX_FRAMES)
 
@@ -42,6 +39,8 @@ void ethtool_aggregate_pause_stats(struct net_device *dev,
 void ethtool_aggregate_rmon_stats(struct net_device *dev,
 				  struct ethtool_rmon_stats *rmon_stats);
 bool ethtool_dev_mm_supported(struct net_device *dev);
+
+void ethnl_pse_send_ntf(struct net_device *netdev, unsigned long notif);
 
 #else
 static inline int ethnl_cable_test_alloc(struct phy_device *phydev, u8 cmd)
@@ -118,6 +117,11 @@ ethtool_aggregate_rmon_stats(struct net_device *dev,
 static inline bool ethtool_dev_mm_supported(struct net_device *dev)
 {
 	return false;
+}
+
+static inline void ethnl_pse_send_ntf(struct net_device *netdev,
+				      unsigned long notif)
+{
 }
 
 #endif /* IS_ENABLED(CONFIG_ETHTOOL_NETLINK) */

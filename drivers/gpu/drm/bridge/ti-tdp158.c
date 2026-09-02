@@ -19,7 +19,7 @@ struct tdp158 {
 };
 
 static void tdp158_enable(struct drm_bridge *bridge,
-			  struct drm_atomic_state *state)
+			  struct drm_atomic_commit *state)
 {
 	int err;
 	struct tdp158 *tdp158 = bridge->driver_private;
@@ -36,7 +36,7 @@ static void tdp158_enable(struct drm_bridge *bridge,
 }
 
 static void tdp158_disable(struct drm_bridge *bridge,
-			   struct drm_atomic_state *state)
+			   struct drm_atomic_commit *state)
 {
 	struct tdp158 *tdp158 = bridge->driver_private;
 
@@ -45,11 +45,13 @@ static void tdp158_disable(struct drm_bridge *bridge,
 	regulator_disable(tdp158->vcc);
 }
 
-static int tdp158_attach(struct drm_bridge *bridge, enum drm_bridge_attach_flags flags)
+static int tdp158_attach(struct drm_bridge *bridge,
+			 struct drm_encoder *encoder,
+			 enum drm_bridge_attach_flags flags)
 {
 	struct tdp158 *tdp158 = bridge->driver_private;
 
-	return drm_bridge_attach(bridge->encoder, tdp158->next, bridge, flags);
+	return drm_bridge_attach(encoder, tdp158->next, bridge, flags);
 }
 
 static const struct drm_bridge_funcs tdp158_bridge_funcs = {
@@ -58,7 +60,7 @@ static const struct drm_bridge_funcs tdp158_bridge_funcs = {
 	.atomic_disable = tdp158_disable,
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
-	.atomic_reset = drm_atomic_helper_bridge_reset,
+	.atomic_create_state = drm_atomic_helper_bridge_create_state,
 };
 
 static int tdp158_probe(struct i2c_client *client)
@@ -66,9 +68,10 @@ static int tdp158_probe(struct i2c_client *client)
 	struct tdp158 *tdp158;
 	struct device *dev = &client->dev;
 
-	tdp158 = devm_kzalloc(dev, sizeof(*tdp158), GFP_KERNEL);
-	if (!tdp158)
-		return -ENOMEM;
+	tdp158 = devm_drm_bridge_alloc(dev, struct tdp158, bridge,
+				       &tdp158_bridge_funcs);
+	if (IS_ERR(tdp158))
+		return PTR_ERR(tdp158);
 
 	tdp158->next = devm_drm_of_get_bridge(dev, dev->of_node, 1, 0);
 	if (IS_ERR(tdp158->next))
@@ -87,7 +90,6 @@ static int tdp158_probe(struct i2c_client *client)
 		return dev_err_probe(dev, PTR_ERR(tdp158->enable), "enable");
 
 	tdp158->bridge.of_node = dev->of_node;
-	tdp158->bridge.funcs = &tdp158_bridge_funcs;
 	tdp158->bridge.driver_private = tdp158;
 	tdp158->dev = dev;
 

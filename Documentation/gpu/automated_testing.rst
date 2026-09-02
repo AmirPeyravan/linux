@@ -99,7 +99,8 @@ How to enable automated testing on your tree
 ============================================
 
 1. Create a Linux tree in https://gitlab.freedesktop.org/ if you don't have one
-yet
+yet, by forking https://gitlab.freedesktop.org/drm/kernel (this allows GitLab
+to internally track that these are the same git objects).
 
 2. In your kernel repo's configuration (eg.
 https://gitlab.freedesktop.org/janedoe/linux/-/settings/ci_cd), change the
@@ -114,6 +115,10 @@ created (eg. https://gitlab.freedesktop.org/janedoe/linux/-/pipelines)
 
 5. The various jobs will be run and when the pipeline is finished, all jobs
 should be green unless a regression has been found.
+
+6. Warnings in the pipeline indicate that lockdep
+(see Documentation/locking/lockdep-design.rst) issues have been detected
+during the tests.
 
 
 How to update test expectations

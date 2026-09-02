@@ -1,43 +1,48 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 
-from lib.py import ksft_run, ksft_exit
-from lib.py import ksft_eq, KsftSkipEx
+from os import path
+from devmem_lib import (setup_test, run_rx, run_tx, run_tx_chunks, run_rx_hds,
+                        run_rx_large_niov)
+from lib.py import ksft_run, ksft_exit, ksft_disruptive
 from lib.py import NetDrvEpEnv
-from lib.py import bkg, cmd, rand_port, wait_port_listen
-from lib.py import ksft_disruptive
-
-
-def require_devmem(cfg):
-    if not hasattr(cfg, "_devmem_probed"):
-        port = rand_port()
-        probe_command = f"./ncdevmem -f {cfg.ifname}"
-        cfg._devmem_supported = cmd(probe_command, fail=False, shell=True).ret == 0
-        cfg._devmem_probed = True
-
-    if not cfg._devmem_supported:
-        raise KsftSkipEx("Test requires devmem support")
 
 
 @ksft_disruptive
 def check_rx(cfg) -> None:
-    cfg.require_ipver("6")
-    require_devmem(cfg)
+    """Run the devmem RX test."""
+    run_rx(cfg)
 
-    port = rand_port()
-    listen_cmd = f"./ncdevmem -l -f {cfg.ifname} -s {cfg.addr_v['6']} -p {port}"
 
-    with bkg(listen_cmd) as socat:
-        wait_port_listen(port)
-        cmd(f"echo -e \"hello\\nworld\"| socat -u - TCP6:[{cfg.addr_v['6']}]:{port}", host=cfg.remote, shell=True)
+@ksft_disruptive
+def check_tx(cfg) -> None:
+    """Run the devmem TX test."""
+    run_tx(cfg)
 
-    ksft_eq(socat.stdout.strip(), "hello\nworld")
+
+@ksft_disruptive
+def check_tx_chunks(cfg) -> None:
+    """Run the devmem TX chunking test."""
+    run_tx_chunks(cfg)
+
+
+def check_rx_hds(cfg) -> None:
+    """Run the HDS test."""
+    run_rx_hds(cfg)
+
+
+def check_rx_large_niov(cfg) -> None:
+    """Run the devmem RX test with rx-page-size = 16 KiB."""
+    run_rx_large_niov(cfg)
 
 
 def main() -> None:
+    """Run the devmem test cases."""
     with NetDrvEpEnv(__file__) as cfg:
-        ksft_run([check_rx],
-                 args=(cfg, ))
+        setup_test(cfg, path.abspath(path.dirname(__file__) + "/ncdevmem"))
+        ksft_run([check_rx, check_tx, check_tx_chunks, check_rx_hds,
+                  check_rx_large_niov],
+                 args=(cfg,))
     ksft_exit()
 
 

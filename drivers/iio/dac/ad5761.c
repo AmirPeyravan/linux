@@ -137,13 +137,11 @@ static int _ad5761_spi_read(struct ad5761_state *st, u8 addr, u16 *val)
 	struct spi_transfer xfers[] = {
 		{
 			.tx_buf = &st->data[0].d8[1],
-			.bits_per_word = 8,
 			.len = 3,
 			.cs_change = true,
 		}, {
 			.tx_buf = &st->data[1].d8[1],
 			.rx_buf = &st->data[2].d8[1],
-			.bits_per_word = 8,
 			.len = 3,
 		},
 	};
@@ -344,11 +342,11 @@ static int ad5761_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad5761_id[] = {
-	{"ad5721", ID_AD5721},
-	{"ad5721r", ID_AD5721R},
-	{"ad5761", ID_AD5761},
-	{"ad5761r", ID_AD5761R},
-	{}
+	{ .name = "ad5721", .driver_data = ID_AD5721 },
+	{ .name = "ad5721r", .driver_data = ID_AD5721R },
+	{ .name = "ad5761", .driver_data = ID_AD5761 },
+	{ .name = "ad5761r", .driver_data = ID_AD5761R },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad5761_id);
 

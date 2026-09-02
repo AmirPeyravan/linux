@@ -190,11 +190,6 @@ static int ad7944_3wire_cs_mode_init_msg(struct device *dev, struct ad7944_adc *
 	struct spi_transfer *xfers = adc->xfers;
 
 	/*
-	 * NB: can get better performance from some SPI controllers if we use
-	 * the same bits_per_word in every transfer.
-	 */
-	xfers[0].bits_per_word = chan->scan_type.realbits;
-	/*
 	 * CS is tied to CNV and we need a low to high transition to start the
 	 * conversion, so place CNV low for t_QUIET to prepare for this.
 	 */
@@ -208,7 +203,6 @@ static int ad7944_3wire_cs_mode_init_msg(struct device *dev, struct ad7944_adc *
 	xfers[1].cs_off = 1;
 	xfers[1].delay.value = t_conv_ns;
 	xfers[1].delay.unit = SPI_DELAY_UNIT_NSECS;
-	xfers[1].bits_per_word = chan->scan_type.realbits;
 
 	/* Then we can read the data during the acquisition phase */
 	xfers[2].rx_buf = &adc->sample.raw;
@@ -227,11 +221,6 @@ static int ad7944_4wire_mode_init_msg(struct device *dev, struct ad7944_adc *adc
 						   : adc->timing_spec->conv_ns;
 	struct spi_transfer *xfers = adc->xfers;
 
-	/*
-	 * NB: can get better performance from some SPI controllers if we use
-	 * the same bits_per_word in every transfer.
-	 */
-	xfers[0].bits_per_word = chan->scan_type.realbits;
 	/*
 	 * CS has to be high for full conversion time to avoid triggering the
 	 * busy indication.
@@ -377,6 +366,8 @@ static int ad7944_single_conversion(struct ad7944_adc *adc,
 
 	if (chan->scan_type.sign == 's')
 		*val = sign_extend32(*val, chan->scan_type.realbits - 1);
+	else
+		*val &= GENMASK(chan->scan_type.realbits - 1, 0);
 
 	return IIO_VAL_INT;
 }
@@ -874,9 +865,9 @@ static const struct of_device_id ad7944_of_match[] = {
 MODULE_DEVICE_TABLE(of, ad7944_of_match);
 
 static const struct spi_device_id ad7944_spi_id[] = {
-	{ "ad7944", (kernel_ulong_t)&ad7944_chip_info },
-	{ "ad7985", (kernel_ulong_t)&ad7985_chip_info },
-	{ "ad7986", (kernel_ulong_t)&ad7986_chip_info },
+	{ .name = "ad7944", .driver_data = (kernel_ulong_t)&ad7944_chip_info },
+	{ .name = "ad7985", .driver_data = (kernel_ulong_t)&ad7985_chip_info },
+	{ .name = "ad7986", .driver_data = (kernel_ulong_t)&ad7986_chip_info },
 	{ }
 
 };

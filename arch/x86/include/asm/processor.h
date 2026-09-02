@@ -16,7 +16,7 @@ struct vm86;
 #include <uapi/asm/sigcontext.h>
 #include <asm/current.h>
 #include <asm/cpufeatures.h>
-#include <asm/cpuid.h>
+#include <asm/cpuid/types.h>
 #include <asm/page.h>
 #include <asm/pgtable_types.h>
 #include <asm/percpu.h>
@@ -68,9 +68,14 @@ extern u16 __read_mostly tlb_lld_2m;
 extern u16 __read_mostly tlb_lld_4m;
 extern u16 __read_mostly tlb_lld_1g;
 
-/*
- * CPU type and hardware bug flags. Kept separately for each CPU.
- */
+enum x86_topology_cpu_type {
+	/* X86_CPU_TYPE_ANY */
+	TOPO_CPU_TYPE_ANY = 0,
+	TOPO_CPU_TYPE_PERFORMANCE,
+	TOPO_CPU_TYPE_EFFICIENCY,
+	TOPO_CPU_TYPE_LOW_POWER,
+	TOPO_CPU_TYPE_UNKNOWN,
+};
 
 struct cpuinfo_topology {
 	// Real APIC ID read from the local APIC
@@ -104,7 +109,7 @@ struct cpuinfo_topology {
 
 	// Hardware defined CPU-type
 	union {
-		u32		cpu_type;
+		u32		hw_cpu_type;
 		struct {
 			// CPUID.1A.EAX[23-0]
 			u32	intel_native_model_id	:24;
@@ -119,8 +124,14 @@ struct cpuinfo_topology {
 				amd_type		:4;
 		};
 	};
+
+	// Linux vendor-agnostic CPU type
+	enum x86_topology_cpu_type cpu_type;
 };
 
+/*
+ * CPU type and hardware bug flags. Kept separately for each CPU.
+ */
 struct cpuinfo_x86 {
 	union {
 		/*
@@ -140,6 +151,11 @@ struct cpuinfo_x86 {
 		__u32		x86_vfm;
 	};
 	__u8			x86_stepping;
+	union {
+		// MSR_IA32_PLATFORM_ID[52-50]
+		__u8			intel_platform_id;
+		__u8			amd_unused;
+	};
 #ifdef CONFIG_X86_64
 	/* Number of 4K pages in DTLB/ITLB combined(in pages): */
 	int			x86_tlbsize;
@@ -165,6 +181,7 @@ struct cpuinfo_x86 {
 	char			x86_vendor_id[16];
 	char			x86_model_id[64];
 	struct cpuinfo_topology	topo;
+	struct cpuid_table	cpuid;
 	/* in KB - valid for CPUS which support this call: */
 	unsigned int		x86_cache_size;
 	int			x86_cache_alignment;	/* In bytes */
@@ -232,6 +249,7 @@ extern void early_cpu_init(void);
 extern void identify_secondary_cpu(unsigned int cpu);
 extern void print_cpu_info(struct cpuinfo_x86 *);
 void print_cpu_msr(struct cpuinfo_x86 *);
+extern u32 intel_get_platform_id(void);
 
 /*
  * Friendlier CR3 helpers.
@@ -514,14 +532,13 @@ struct thread_struct {
 
 	struct thread_shstk	shstk;
 #endif
-
-	/* Floating point and extended processor state */
-	struct fpu		fpu;
-	/*
-	 * WARNING: 'fpu' is dynamically-sized.  It *MUST* be at
-	 * the end.
-	 */
 };
+
+#ifdef CONFIG_X86_DEBUG_FPU
+extern struct fpu *x86_task_fpu(struct task_struct *task);
+#else
+# define x86_task_fpu(task)	((struct fpu *)((void *)(task) + sizeof(*(task))))
+#endif
 
 extern void fpu_thread_struct_whitelist(unsigned long *offset, unsigned long *size);
 
@@ -700,6 +717,11 @@ static inline u32 per_cpu_l2c_id(unsigned int cpu)
 	return per_cpu(cpu_info.topo.l2c_id, cpu);
 }
 
+static inline u32 per_cpu_core_id(unsigned int cpu)
+{
+	return per_cpu(cpu_info.topo.core_id, cpu);
+}
+
 #ifdef CONFIG_CPU_SUP_AMD
 /*
  * Issue a DIV 0/1 insn to clear any division data from previous DIV
@@ -729,11 +751,15 @@ bool xen_set_default_idle(void);
 #endif
 
 void __noreturn stop_this_cpu(void *dummy);
+extern bool x86_hypervisor_present;
 void microcode_check(struct cpuinfo_x86 *prev_info);
 void store_cpu_caps(struct cpuinfo_x86 *info);
 
+DECLARE_PER_CPU(bool, cache_state_incoherent);
+
 enum l1tf_mitigations {
 	L1TF_MITIGATION_OFF,
+	L1TF_MITIGATION_AUTO,
 	L1TF_MITIGATION_FLUSH_NOWARN,
 	L1TF_MITIGATION_FLUSH,
 	L1TF_MITIGATION_FLUSH_NOSMT,

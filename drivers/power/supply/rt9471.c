@@ -12,7 +12,6 @@
 #include <linux/interrupt.h>
 #include <linux/kstrtox.h>
 #include <linux/linear_range.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -192,12 +191,12 @@ static const struct reg_field rt9471_reg_fields[F_MAX_FIELDS] = {
 };
 
 static const struct linear_range rt9471_chg_ranges[RT9471_MAX_RANGES] = {
-	[RT9471_RANGE_AICR] = { .min = 50000,	.min_sel = 1, .max_sel = 63, .step = 50000 },
-	[RT9471_RANGE_MIVR] = { .min = 3900000,	.min_sel = 0, .max_sel = 15, .step = 100000 },
-	[RT9471_RANGE_IPRE] = { .min = 50000,	.min_sel = 0, .max_sel = 15, .step = 50000 },
-	[RT9471_RANGE_VCHG] = { .min = 3900000,	.min_sel = 0, .max_sel = 80, .step = 10000 },
-	[RT9471_RANGE_ICHG] = { .min = 0,	.min_sel = 0, .max_sel = 63, .step = 50000 },
-	[RT9471_RANGE_IEOC] = { .min = 50000,	.min_sel = 0, .max_sel = 15, .step = 50000 },
+	[RT9471_RANGE_AICR] = LINEAR_RANGE(50000,	1, 63, 50000),
+	[RT9471_RANGE_MIVR] = LINEAR_RANGE(3900000,	0, 15, 100000),
+	[RT9471_RANGE_IPRE] = LINEAR_RANGE(50000,	0, 15, 50000),
+	[RT9471_RANGE_VCHG] = LINEAR_RANGE(3900000,	0, 80, 10000),
+	[RT9471_RANGE_ICHG] = LINEAR_RANGE(0,		0, 63, 50000),
+	[RT9471_RANGE_IEOC] = LINEAR_RANGE(50000,	0, 15, 50000),
 };
 
 static int rt9471_set_value_by_field_range(struct rt9471_chip *chip,
@@ -370,23 +369,28 @@ static int rt9471_charger_set_property(struct power_supply *psy,
 				       const union power_supply_propval *val)
 {
 	struct rt9471_chip *chip = power_supply_get_drvdata(psy);
-	int value = val->intval;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		return regmap_field_write(chip->rm_fields[F_CHG_EN], !!value);
+		return regmap_field_write(chip->rm_fields[F_CHG_EN],
+					  !!val->intval);
 	case POWER_SUPPLY_PROP_ONLINE:
-		return regmap_field_write(chip->rm_fields[F_HZ], !value);
+		return regmap_field_write(chip->rm_fields[F_HZ], !val->intval);
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
-		return rt9471_set_value_by_field_range(chip, F_ICHG_REG, RT9471_RANGE_ICHG, value);
+		return rt9471_set_value_by_field_range(
+			chip, F_ICHG_REG, RT9471_RANGE_ICHG, val->intval);
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
-		return rt9471_set_value_by_field_range(chip, F_VBAT_REG, RT9471_RANGE_VCHG, value);
+		return rt9471_set_value_by_field_range(
+			chip, F_VBAT_REG, RT9471_RANGE_VCHG, val->intval);
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
-		return rt9471_set_value_by_field_range(chip, F_AICR, RT9471_RANGE_AICR, value);
+		return rt9471_set_value_by_field_range(
+			chip, F_AICR, RT9471_RANGE_AICR, val->intval);
 	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
-		return rt9471_set_value_by_field_range(chip, F_MIVR, RT9471_RANGE_MIVR, value);
+		return rt9471_set_value_by_field_range(
+			chip, F_MIVR, RT9471_RANGE_MIVR, val->intval);
 	case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
-		return rt9471_set_value_by_field_range(chip, F_IPRE_CHG, RT9471_RANGE_IPRE, value);
+		return rt9471_set_value_by_field_range(
+			chip, F_IPRE_CHG, RT9471_RANGE_IPRE, val->intval);
 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
 		return rt9471_set_ieoc(chip, val->intval);
 	default:
@@ -402,35 +406,39 @@ static int rt9471_charger_get_property(struct power_supply *psy,
 				       union power_supply_propval *val)
 {
 	struct rt9471_chip *chip = power_supply_get_drvdata(psy);
-	int *pvalue = &val->intval;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		return rt9471_get_status(chip, pvalue);
+		return rt9471_get_status(chip, &val->intval);
 	case POWER_SUPPLY_PROP_ONLINE:
-		return rt9471_get_vbus_good(chip, pvalue);
+		return rt9471_get_vbus_good(chip, &val->intval);
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		return rt9471_get_usb_type_current(chip, pvalue);
+		return rt9471_get_usb_type_current(chip, &val->intval);
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
-		return rt9471_get_value_by_field_range(chip, F_ICHG_REG, RT9471_RANGE_ICHG, pvalue);
+		return rt9471_get_value_by_field_range(
+			chip, F_ICHG_REG, RT9471_RANGE_ICHG, &val->intval);
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
-		*pvalue = RT9471_ICHG_MAXUA;
+		val->intval = RT9471_ICHG_MAXUA;
 		return 0;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
-		return rt9471_get_value_by_field_range(chip, F_VBAT_REG, RT9471_RANGE_VCHG, pvalue);
+		return rt9471_get_value_by_field_range(
+			chip, F_VBAT_REG, RT9471_RANGE_VCHG, &val->intval);
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX:
 		val->intval = RT9471_VCHG_MAXUV;
 		return 0;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
-		return rt9471_get_value_by_field_range(chip, F_AICR, RT9471_RANGE_AICR, pvalue);
+		return rt9471_get_value_by_field_range(
+			chip, F_AICR, RT9471_RANGE_AICR, &val->intval);
 	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
-		return rt9471_get_value_by_field_range(chip, F_MIVR, RT9471_RANGE_MIVR, pvalue);
+		return rt9471_get_value_by_field_range(
+			chip, F_MIVR, RT9471_RANGE_MIVR, &val->intval);
 	case POWER_SUPPLY_PROP_USB_TYPE:
-		return rt9471_get_usb_type(chip, pvalue);
+		return rt9471_get_usb_type(chip, &val->intval);
 	case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
-		return rt9471_get_value_by_field_range(chip, F_IPRE_CHG, RT9471_RANGE_IPRE, pvalue);
+		return rt9471_get_value_by_field_range(
+			chip, F_IPRE_CHG, RT9471_RANGE_IPRE, &val->intval);
 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
-		return rt9471_get_ieoc(chip, pvalue);
+		return rt9471_get_ieoc(chip, &val->intval);
 	case POWER_SUPPLY_PROP_MODEL_NAME:
 		val->strval = rt9471_model;
 		return 0;
@@ -584,8 +592,7 @@ static int rt9471_register_interrupts(struct rt9471_chip *chip)
 		ret = devm_request_threaded_irq(dev, virq, NULL, curr->handler,
 						IRQF_ONESHOT, curr->name, chip);
 		if (ret)
-			return dev_err_probe(dev, ret, "Failed to register IRQ (%s)\n",
-					     curr->name);
+			return ret;
 	}
 
 	return 0;

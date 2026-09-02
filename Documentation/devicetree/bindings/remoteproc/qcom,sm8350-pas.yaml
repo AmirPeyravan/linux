@@ -15,16 +15,20 @@ description:
 
 properties:
   compatible:
-    enum:
-      - qcom,sar2130p-adsp-pas
-      - qcom,sm8350-adsp-pas
-      - qcom,sm8350-cdsp-pas
-      - qcom,sm8350-slpi-pas
-      - qcom,sm8350-mpss-pas
-      - qcom,sm8450-adsp-pas
-      - qcom,sm8450-cdsp-pas
-      - qcom,sm8450-mpss-pas
-      - qcom,sm8450-slpi-pas
+    oneOf:
+      - enum:
+          - qcom,sar2130p-adsp-pas
+          - qcom,sm8350-adsp-pas
+          - qcom,sm8350-cdsp-pas
+          - qcom,sm8350-slpi-pas
+          - qcom,sm8350-mpss-pas
+          - qcom,sm8450-adsp-pas
+          - qcom,sm8450-cdsp-pas
+          - qcom,sm8450-mpss-pas
+          - qcom,sm8450-slpi-pas
+      - items:
+          - const: qcom,sc8280xp-slpi-pas
+          - const: qcom,sm8350-slpi-pas
 
   reg:
     maxItems: 1
@@ -51,6 +55,34 @@ properties:
     maxItems: 1
     description: Firmware name for the Hexagon core
 
+  interrupts:
+    minItems: 5
+    items:
+      - description: Watchdog interrupt
+      - description: Fatal interrupt
+      - description: Ready interrupt
+      - description: Handover interrupt
+      - description: Stop acknowledge interrupt
+      - description: Shutdown acknowledge interrupt
+
+  interrupt-names:
+    minItems: 5
+    items:
+      - const: wdog
+      - const: fatal
+      - const: ready
+      - const: handover
+      - const: stop-ack
+      - const: shutdown-ack
+
+  qcom,smem-states:
+    maxItems: 1
+    description: States used by the AP to signal the Hexagon core
+
+  qcom,smem-state-names:
+    maxItems: 1
+    description: The names of the state bits used for SMP2P output
+
 required:
   - compatible
   - reg
@@ -61,14 +93,15 @@ allOf:
   - if:
       properties:
         compatible:
-          enum:
-            - qcom,sar2130p-adsp-pas
-            - qcom,sm8350-adsp-pas
-            - qcom,sm8350-cdsp-pas
-            - qcom,sm8350-slpi-pas
-            - qcom,sm8450-adsp-pas
-            - qcom,sm8450-cdsp-pas
-            - qcom,sm8450-slpi-pas
+          contains:
+            enum:
+              - qcom,sar2130p-adsp-pas
+              - qcom,sm8350-adsp-pas
+              - qcom,sm8350-cdsp-pas
+              - qcom,sm8350-slpi-pas
+              - qcom,sm8450-adsp-pas
+              - qcom,sm8450-cdsp-pas
+              - qcom,sm8450-slpi-pas
     then:
       properties:
         interrupts:
@@ -102,12 +135,13 @@ allOf:
   - if:
       properties:
         compatible:
-          enum:
-            - qcom,sar2130p-adsp-pas
-            - qcom,sm8350-adsp-pas
-            - qcom,sm8350-slpi-pas
-            - qcom,sm8450-adsp-pas
-            - qcom,sm8450-slpi-pas
+          contains:
+            enum:
+              - qcom,sar2130p-adsp-pas
+              - qcom,sm8350-adsp-pas
+              - qcom,sm8350-slpi-pas
+              - qcom,sm8450-adsp-pas
+              - qcom,sm8450-slpi-pas
     then:
       properties:
         power-domains:

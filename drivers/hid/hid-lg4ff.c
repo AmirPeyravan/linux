@@ -336,6 +336,8 @@ int lg4ff_raw_event(struct hid_device *hdev, struct hid_report *report,
 	if (entry->wdata.combine) {
 		switch (entry->wdata.product_id) {
 		case USB_DEVICE_ID_LOGITECH_WHEEL:
+			if (size < 7)
+				return 0;
 			rd[5] = rd[3];
 			rd[6] = 0x7F;
 			return 1;
@@ -343,10 +345,14 @@ int lg4ff_raw_event(struct hid_device *hdev, struct hid_report *report,
 		case USB_DEVICE_ID_LOGITECH_WINGMAN_FFG:
 		case USB_DEVICE_ID_LOGITECH_MOMO_WHEEL:
 		case USB_DEVICE_ID_LOGITECH_MOMO_WHEEL2:
+			if (size < 6)
+				return 0;
 			rd[4] = rd[3];
 			rd[5] = 0x7F;
 			return 1;
 		case USB_DEVICE_ID_LOGITECH_DFP_WHEEL:
+			if (size < 7)
+				return 0;
 			rd[5] = rd[4];
 			rd[6] = 0x7F;
 			return 1;
@@ -366,6 +372,8 @@ int lg4ff_raw_event(struct hid_device *hdev, struct hid_report *report,
 		}
 
 		/* Compute a combined axis when wheel does not supply it */
+		if (size <= offset + 1)
+			return 0;
 		rd[offset] = (0xFF + rd[offset] - rd[offset+1]) >> 1;
 		rd[offset+1] = 0x7F;
 		return 1;
@@ -823,7 +831,7 @@ static ssize_t lg4ff_alternate_modes_show(struct device *dev, struct device_attr
 	for (i = 0; i < LG4FF_MODE_MAX_IDX; i++) {
 		if (entry->wdata.alternate_modes & BIT(i)) {
 			/* Print tag and full name */
-			count += scnprintf(buf + count, PAGE_SIZE - count, "%s: %s",
+			count += sysfs_emit_at(buf, count, "%s: %s",
 					   lg4ff_alternate_modes[i].tag,
 					   !lg4ff_alternate_modes[i].product_id ? entry->wdata.real_name : lg4ff_alternate_modes[i].name);
 			if (count >= PAGE_SIZE - 1)
@@ -832,9 +840,9 @@ static ssize_t lg4ff_alternate_modes_show(struct device *dev, struct device_attr
 			/* Mark the currently active mode with an asterisk */
 			if (lg4ff_alternate_modes[i].product_id == entry->wdata.product_id ||
 			    (lg4ff_alternate_modes[i].product_id == 0 && entry->wdata.product_id == entry->wdata.real_product_id))
-				count += scnprintf(buf + count, PAGE_SIZE - count, " *\n");
+				count += sysfs_emit_at(buf, count, " *\n");
 			else
-				count += scnprintf(buf + count, PAGE_SIZE - count, "\n");
+				count += sysfs_emit_at(buf, count, "\n");
 
 			if (count >= PAGE_SIZE - 1)
 				return count;
@@ -956,7 +964,7 @@ static ssize_t lg4ff_combine_show(struct device *dev, struct device_attribute *a
 		return 0;
 	}
 
-	count = scnprintf(buf, PAGE_SIZE, "%u\n", entry->wdata.combine);
+	count = sysfs_emit(buf, "%u\n", entry->wdata.combine);
 	return count;
 }
 
@@ -1009,7 +1017,7 @@ static ssize_t lg4ff_range_show(struct device *dev, struct device_attribute *att
 		return 0;
 	}
 
-	count = scnprintf(buf, PAGE_SIZE, "%u\n", entry->wdata.range);
+	count = sysfs_emit(buf, "%u\n", entry->wdata.range);
 	return count;
 }
 
@@ -1073,7 +1081,7 @@ static ssize_t lg4ff_real_id_show(struct device *dev, struct device_attribute *a
 		return 0;
 	}
 
-	count = scnprintf(buf, PAGE_SIZE, "%s: %s\n", entry->wdata.real_tag, entry->wdata.real_name);
+	count = sysfs_emit(buf, "%s: %s\n", entry->wdata.real_tag, entry->wdata.real_name);
 	return count;
 }
 
@@ -1288,7 +1296,7 @@ int lg4ff_init(struct hid_device *hid)
 		hid_err(hid, "Cannot add device, private driver data not allocated\n");
 		return -1;
 	}
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 	spin_lock_init(&entry->report_lock);

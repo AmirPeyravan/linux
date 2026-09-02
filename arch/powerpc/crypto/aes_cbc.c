@@ -12,13 +12,17 @@
 #include <crypto/aes.h>
 #include <crypto/internal/simd.h>
 #include <crypto/internal/skcipher.h>
+#include <linux/err.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/uaccess.h>
 
 #include "aesp8-ppc.h"
 
 struct p8_aes_cbc_ctx {
 	struct crypto_skcipher *fallback;
-	struct aes_key enc_key;
-	struct aes_key dec_key;
+	struct p8_aes_key enc_key;
+	struct p8_aes_key dec_key;
 };
 
 static int p8_aes_cbc_init(struct crypto_skcipher *tfm)
@@ -68,7 +72,7 @@ static int p8_aes_cbc_setkey(struct crypto_skcipher *tfm, const u8 *key,
 	return ret ? -EINVAL : 0;
 }
 
-static int p8_aes_cbc_crypt(struct skcipher_request *req, int enc)
+static int p8_aes_cbc_crypt(struct skcipher_request *req, bool enc)
 {
 	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(req);
 	const struct p8_aes_cbc_ctx *ctx = crypto_skcipher_ctx(tfm);
@@ -106,12 +110,12 @@ static int p8_aes_cbc_crypt(struct skcipher_request *req, int enc)
 
 static int p8_aes_cbc_encrypt(struct skcipher_request *req)
 {
-	return p8_aes_cbc_crypt(req, 1);
+	return p8_aes_cbc_crypt(req, true);
 }
 
 static int p8_aes_cbc_decrypt(struct skcipher_request *req)
 {
-	return p8_aes_cbc_crypt(req, 0);
+	return p8_aes_cbc_crypt(req, false);
 }
 
 struct skcipher_alg p8_aes_cbc_alg = {

@@ -16,11 +16,17 @@ static const struct regmap_config pm886_regmap_config = {
 	.max_register = PM886_REG_RTC_SPARE6,
 };
 
-static struct regmap_irq pm886_regmap_irqs[] = {
+static const struct regmap_config pm886_regmap_battery_config = {
+	.reg_bits = 8,
+	.val_bits = 8,
+	.max_register = PM886_REG_CLS_CONFIG1,
+};
+
+static const struct regmap_irq pm886_regmap_irqs[] = {
 	REGMAP_IRQ_REG(PM886_IRQ_ONKEY, 0, PM886_INT_ENA1_ONKEY),
 };
 
-static struct regmap_irq_chip pm886_regmap_irq_chip = {
+static const struct regmap_irq_chip pm886_regmap_irq_chip = {
 	.name = "88pm886",
 	.irqs = pm886_regmap_irqs,
 	.num_irqs = ARRAY_SIZE(pm886_regmap_irqs),
@@ -30,11 +36,12 @@ static struct regmap_irq_chip pm886_regmap_irq_chip = {
 	.unmask_base = PM886_REG_INT_ENA_1,
 };
 
-static struct resource pm886_onkey_resources[] = {
+static const struct resource pm886_onkey_resources[] = {
 	DEFINE_RES_IRQ_NAMED(PM886_IRQ_ONKEY, "88pm886-onkey"),
 };
 
-static struct mfd_cell pm886_devs[] = {
+static const struct mfd_cell pm886_devs[] = {
+	MFD_CELL_NAME("88pm886-gpadc"),
 	MFD_CELL_RES("88pm886-onkey", pm886_onkey_resources),
 	MFD_CELL_NAME("88pm886-regulator"),
 	MFD_CELL_NAME("88pm886-rtc"),
@@ -84,10 +91,11 @@ static int pm886_setup_irq(struct pm886_chip *chip,
 
 static int pm886_probe(struct i2c_client *client)
 {
+	struct regmap *regmap, *regmap_battery;
 	struct regmap_irq_chip_data *irq_data;
 	struct device *dev = &client->dev;
+	struct i2c_client *battery_page;
 	struct pm886_chip *chip;
-	struct regmap *regmap;
 	unsigned int chip_id;
 	int err;
 
@@ -111,6 +119,18 @@ static int pm886_probe(struct i2c_client *client)
 	if (chip->chip_id != chip_id)
 		return dev_err_probe(dev, -EINVAL, "Unsupported chip: 0x%x\n", chip_id);
 
+	battery_page = devm_i2c_new_dummy_device(dev, client->adapter,
+						 client->addr + PM886_PAGE_OFFSET_BATTERY);
+	if (IS_ERR(battery_page))
+		return dev_err_probe(dev, PTR_ERR(battery_page),
+				     "Failed to initialize battery page\n");
+
+	regmap_battery = devm_regmap_init_i2c(battery_page, &pm886_regmap_battery_config);
+	if (IS_ERR(regmap_battery))
+		return dev_err_probe(dev, PTR_ERR(regmap_battery),
+				     "Failed to initialize battery regmap\n");
+	chip->regmap_battery = regmap_battery;
+
 	err = pm886_setup_irq(chip, &irq_data);
 	if (err)
 		return err;
@@ -124,7 +144,11 @@ static int pm886_probe(struct i2c_client *client)
 	if (err)
 		return dev_err_probe(dev, err, "Failed to register power off handler\n");
 
-	device_init_wakeup(dev, device_property_read_bool(dev, "wakeup-source"));
+	if (device_property_read_bool(dev, "wakeup-source")) {
+		err = devm_device_init_wakeup(dev);
+		if (err)
+			return dev_err_probe(dev, err, "Failed to init wakeup\n");
+	}
 
 	return 0;
 }

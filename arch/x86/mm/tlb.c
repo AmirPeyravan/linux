@@ -12,6 +12,7 @@
 #include <linux/task_work.h>
 #include <linux/mmu_notifier.h>
 #include <linux/mmu_context.h>
+#include <linux/kvm_types.h>
 
 #include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
@@ -19,6 +20,7 @@
 #include <asm/cache.h>
 #include <asm/cacheflush.h>
 #include <asm/apic.h>
+#include <asm/msr.h>
 #include <asm/perf_event.h>
 #include <asm/tlb.h>
 
@@ -160,7 +162,7 @@ static inline unsigned long build_cr3(pgd_t *pgd, u16 asid, unsigned long lam)
 {
 	unsigned long cr3 = __sme_pa(pgd) | lam;
 
-	if (static_cpu_has(X86_FEATURE_PCID)) {
+	if (cpu_feature_enabled(X86_FEATURE_PCID)) {
 		cr3 |= kern_pcid(asid);
 	} else {
 		VM_WARN_ON_ONCE(asid != 0);
@@ -195,7 +197,7 @@ static void clear_asid_other(void)
 	 * This is only expected to be set if we have disabled
 	 * kernel _PAGE_GLOBAL pages.
 	 */
-	if (!static_cpu_has(X86_FEATURE_PTI)) {
+	if (!cpu_feature_enabled(X86_FEATURE_PTI)) {
 		WARN_ON_ONCE(1);
 		return;
 	}
@@ -215,16 +217,20 @@ static void clear_asid_other(void)
 
 atomic64_t last_mm_ctx_id = ATOMIC64_INIT(1);
 
+struct new_asid {
+	unsigned int asid	: 16;
+	unsigned int need_flush : 1;
+};
 
-static void choose_new_asid(struct mm_struct *next, u64 next_tlb_gen,
-			    u16 *new_asid, bool *need_flush)
+static struct new_asid choose_new_asid(struct mm_struct *next, u64 next_tlb_gen)
 {
+	struct new_asid ns;
 	u16 asid;
 
-	if (!static_cpu_has(X86_FEATURE_PCID)) {
-		*new_asid = 0;
-		*need_flush = true;
-		return;
+	if (!cpu_feature_enabled(X86_FEATURE_PCID)) {
+		ns.asid = 0;
+		ns.need_flush = 1;
+		return ns;
 	}
 
 	/*
@@ -235,9 +241,9 @@ static void choose_new_asid(struct mm_struct *next, u64 next_tlb_gen,
 		u16 global_asid = mm_global_asid(next);
 
 		if (global_asid) {
-			*new_asid = global_asid;
-			*need_flush = false;
-			return;
+			ns.asid = global_asid;
+			ns.need_flush = 0;
+			return ns;
 		}
 	}
 
@@ -249,22 +255,23 @@ static void choose_new_asid(struct mm_struct *next, u64 next_tlb_gen,
 		    next->context.ctx_id)
 			continue;
 
-		*new_asid = asid;
-		*need_flush = (this_cpu_read(cpu_tlbstate.ctxs[asid].tlb_gen) <
-			       next_tlb_gen);
-		return;
+		ns.asid = asid;
+		ns.need_flush = (this_cpu_read(cpu_tlbstate.ctxs[asid].tlb_gen) < next_tlb_gen);
+		return ns;
 	}
 
 	/*
 	 * We don't currently own an ASID slot on this CPU.
 	 * Allocate a slot.
 	 */
-	*new_asid = this_cpu_add_return(cpu_tlbstate.next_asid, 1) - 1;
-	if (*new_asid >= TLB_NR_DYN_ASIDS) {
-		*new_asid = 0;
+	ns.asid = this_cpu_add_return(cpu_tlbstate.next_asid, 1) - 1;
+	if (ns.asid >= TLB_NR_DYN_ASIDS) {
+		ns.asid = 0;
 		this_cpu_write(cpu_tlbstate.next_asid, 1);
 	}
-	*need_flush = true;
+	ns.need_flush = true;
+
+	return ns;
 }
 
 /*
@@ -394,6 +401,7 @@ static void use_global_asid(struct mm_struct *mm)
 	mm_assign_global_asid(mm, asid);
 }
 
+#ifdef CONFIG_BROADCAST_TLB_FLUSH
 void mm_free_global_asid(struct mm_struct *mm)
 {
 	if (!cpu_feature_enabled(X86_FEATURE_INVLPGB))
@@ -405,13 +413,12 @@ void mm_free_global_asid(struct mm_struct *mm)
 	guard(raw_spinlock_irqsave)(&global_asid_lock);
 
 	/* The global ASID can be re-used only after flush at wrap-around. */
-#ifdef CONFIG_BROADCAST_TLB_FLUSH
 	__set_bit(mm->context.global_asid, global_asid_freed);
 
 	mm->context.global_asid = 0;
 	global_asid_available++;
-#endif
 }
+#endif
 
 /*
  * Is the mm transitioning from a CPU-local ASID to a global ASID?
@@ -548,7 +555,7 @@ static inline void invalidate_user_asid(u16 asid)
 	if (!cpu_feature_enabled(X86_FEATURE_PCID))
 		return;
 
-	if (!static_cpu_has(X86_FEATURE_PTI))
+	if (!cpu_feature_enabled(X86_FEATURE_PTI))
 		return;
 
 	__set_bit(kern_pcid(asid),
@@ -623,7 +630,7 @@ static void l1d_flush_evaluate(unsigned long prev_mm, unsigned long next_mm,
 {
 	/* Flush L1D if the outgoing task requests it */
 	if (prev_mm & LAST_USER_MM_L1D_FLUSH)
-		wrmsrl(MSR_IA32_FLUSH_CMD, L1D_FLUSH);
+		wrmsrq(MSR_IA32_FLUSH_CMD, L1D_FLUSH);
 
 	/* Check whether the incoming task opted in for L1D flush */
 	if (likely(!(next_mm & LAST_USER_MM_L1D_FLUSH)))
@@ -781,9 +788,9 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
 	bool was_lazy = this_cpu_read(cpu_tlbstate_shared.is_lazy);
 	unsigned cpu = smp_processor_id();
 	unsigned long new_lam;
+	struct new_asid ns;
 	u64 next_tlb_gen;
-	bool need_flush;
-	u16 new_asid;
+
 
 	/* We don't want flush_tlb_func() to run concurrently with us. */
 	if (IS_ENABLED(CONFIG_PROVE_LOCKING))
@@ -847,14 +854,15 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
 		 * mm_cpumask. The TLB shootdown code can figure out from
 		 * cpu_tlbstate_shared.is_lazy whether or not to send an IPI.
 		 */
-		if (IS_ENABLED(CONFIG_DEBUG_VM) && WARN_ON_ONCE(prev != &init_mm &&
+		if (IS_ENABLED(CONFIG_DEBUG_VM) &&
+		    WARN_ON_ONCE(prev != &init_mm && !is_notrack_mm(prev) &&
 				 !cpumask_test_cpu(cpu, mm_cpumask(next))))
 			cpumask_set_cpu(cpu, mm_cpumask(next));
 
 		/* Check if the current mm is transitioning to a global ASID */
 		if (mm_needs_global_asid(next, prev_asid)) {
 			next_tlb_gen = atomic64_read(&next->context.tlb_gen);
-			choose_new_asid(next, next_tlb_gen, &new_asid, &need_flush);
+			ns = choose_new_asid(next, next_tlb_gen);
 			goto reload_tlb;
 		}
 
@@ -889,8 +897,8 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
 		 * TLB contents went out of date while we were in lazy
 		 * mode. Fall through to the TLB switching code below.
 		 */
-		new_asid = prev_asid;
-		need_flush = true;
+		ns.asid = prev_asid;
+		ns.need_flush = true;
 	} else {
 		/*
 		 * Apply process to process speculation vulnerability
@@ -904,36 +912,48 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
 		 * CR3 and cpu_tlbstate.loaded_mm are not all in sync.
 		 */
 		this_cpu_write(cpu_tlbstate.loaded_mm, LOADED_MM_SWITCHING);
-		barrier();
 
 		/*
-		 * Leave this CPU in prev's mm_cpumask. Atomic writes to
-		 * mm_cpumask can be expensive under contention. The CPU
-		 * will be removed lazily at TLB flush time.
+		 * Make sure this CPU is set in mm_cpumask() such that we'll
+		 * receive invalidation IPIs.
+		 *
+		 * Rely on the smp_mb() implied by cpumask_set_cpu()'s atomic
+		 * operation, or explicitly provide one. Such that:
+		 *
+		 * switch_mm_irqs_off()				flush_tlb_mm_range()
+		 *   smp_store_release(loaded_mm, SWITCHING);     atomic64_inc_return(tlb_gen)
+		 *   smp_mb(); // here                            // smp_mb() implied
+		 *   atomic64_read(tlb_gen);                      this_cpu_read(loaded_mm);
+		 *
+		 * we properly order against flush_tlb_mm_range(), where the
+		 * loaded_mm load can happen in mative_flush_tlb_multi() ->
+		 * should_flush_tlb().
+		 *
+		 * This way switch_mm() must see the new tlb_gen or
+		 * flush_tlb_mm_range() must see the new loaded_mm, or both.
 		 */
-		VM_WARN_ON_ONCE(prev != &init_mm && !cpumask_test_cpu(cpu,
-				mm_cpumask(prev)));
-
-		/* Start receiving IPIs and then read tlb_gen (and LAM below) */
 		if (next != &init_mm && !cpumask_test_cpu(cpu, mm_cpumask(next)))
 			cpumask_set_cpu(cpu, mm_cpumask(next));
+		else
+			smp_mb();
+
 		next_tlb_gen = atomic64_read(&next->context.tlb_gen);
 
-		choose_new_asid(next, next_tlb_gen, &new_asid, &need_flush);
+		ns = choose_new_asid(next, next_tlb_gen);
 	}
 
 reload_tlb:
 	new_lam = mm_lam_cr3_mask(next);
-	if (need_flush) {
-		VM_WARN_ON_ONCE(is_global_asid(new_asid));
-		this_cpu_write(cpu_tlbstate.ctxs[new_asid].ctx_id, next->context.ctx_id);
-		this_cpu_write(cpu_tlbstate.ctxs[new_asid].tlb_gen, next_tlb_gen);
-		load_new_mm_cr3(next->pgd, new_asid, new_lam, true);
+	if (ns.need_flush) {
+		VM_WARN_ON_ONCE(is_global_asid(ns.asid));
+		this_cpu_write(cpu_tlbstate.ctxs[ns.asid].ctx_id, next->context.ctx_id);
+		this_cpu_write(cpu_tlbstate.ctxs[ns.asid].tlb_gen, next_tlb_gen);
+		load_new_mm_cr3(next->pgd, ns.asid, new_lam, true);
 
 		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
 	} else {
 		/* The new ASID is already up to date. */
-		load_new_mm_cr3(next->pgd, new_asid, new_lam, false);
+		load_new_mm_cr3(next->pgd, ns.asid, new_lam, false);
 
 		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, 0);
 	}
@@ -942,7 +962,7 @@ reload_tlb:
 	barrier();
 
 	this_cpu_write(cpu_tlbstate.loaded_mm, next);
-	this_cpu_write(cpu_tlbstate.loaded_mm_asid, new_asid);
+	this_cpu_write(cpu_tlbstate.loaded_mm_asid, ns.asid);
 	cpu_tlbstate_update_lam(new_lam, mm_untag_mask(next));
 
 	if (next != prev) {
@@ -952,24 +972,74 @@ reload_tlb:
 }
 
 /*
- * Please ignore the name of this function.  It should be called
- * switch_to_kernel_thread().
+ * Using a temporary mm allows to set temporary mappings that are not accessible
+ * by other CPUs. Such mappings are needed to perform sensitive memory writes
+ * that override the kernel memory protections (e.g., W^X), without exposing the
+ * temporary page-table mappings that are required for these write operations to
+ * other CPUs. Using a temporary mm also allows to avoid TLB shootdowns when the
+ * mapping is torn down.  Temporary mms can also be used for EFI runtime service
+ * calls or similar functionality.
  *
- * enter_lazy_tlb() is a hint from the scheduler that we are entering a
- * kernel thread or other context without an mm.  Acceptable implementations
- * include doing nothing whatsoever, switching to init_mm, or various clever
- * lazy tricks to try to minimize TLB flushes.
+ * It is illegal to schedule while using a temporary mm -- the context switch
+ * code is unaware of the temporary mm and does not know how to context switch.
+ * Use a real (non-temporary) mm in a kernel thread if you need to sleep.
  *
- * The scheduler reserves the right to call enter_lazy_tlb() several times
- * in a row.  It will notify us that we're going back to a real mm by
- * calling switch_mm_irqs_off().
+ * Note: For sensitive memory writes, the temporary mm needs to be used
+ *       exclusively by a single core, and IRQs should be disabled while the
+ *       temporary mm is loaded, thereby preventing interrupt handler bugs from
+ *       overriding the kernel memory protection.
  */
-void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
+struct mm_struct *use_temporary_mm(struct mm_struct *temp_mm)
 {
-	if (this_cpu_read(cpu_tlbstate.loaded_mm) == &init_mm)
-		return;
+	struct mm_struct *prev_mm;
 
-	this_cpu_write(cpu_tlbstate_shared.is_lazy, true);
+	lockdep_assert_preemption_disabled();
+	guard(irqsave)();
+
+	/*
+	 * Make sure not to be in TLB lazy mode, as otherwise we'll end up
+	 * with a stale address space WITHOUT being in lazy mode after
+	 * restoring the previous mm.
+	 */
+	if (this_cpu_read(cpu_tlbstate_shared.is_lazy))
+		leave_mm();
+
+	prev_mm = this_cpu_read(cpu_tlbstate.loaded_mm);
+	switch_mm_irqs_off(NULL, temp_mm, current);
+
+	/*
+	 * If breakpoints are enabled, disable them while the temporary mm is
+	 * used. Userspace might set up watchpoints on addresses that are used
+	 * in the temporary mm, which would lead to wrong signals being sent or
+	 * crashes.
+	 *
+	 * Note that breakpoints are not disabled selectively, which also causes
+	 * kernel breakpoints (e.g., perf's) to be disabled. This might be
+	 * undesirable, but still seems reasonable as the code that runs in the
+	 * temporary mm should be short.
+	 */
+	if (hw_breakpoint_active())
+		hw_breakpoint_disable();
+
+	return prev_mm;
+}
+
+void unuse_temporary_mm(struct mm_struct *prev_mm)
+{
+	lockdep_assert_preemption_disabled();
+	guard(irqsave)();
+
+	/* Clear the cpumask, to indicate no TLB flushing is needed anywhere */
+	cpumask_clear_cpu(smp_processor_id(), mm_cpumask(this_cpu_read(cpu_tlbstate.loaded_mm)));
+
+	switch_mm_irqs_off(NULL, prev_mm, current);
+
+	/*
+	 * Restore the breakpoints if they were disabled before the temporary mm
+	 * was loaded.
+	 */
+	if (hw_breakpoint_active())
+		hw_breakpoint_restore();
 }
 
 /*
@@ -1053,7 +1123,7 @@ static void flush_tlb_func(void *info)
 	VM_WARN_ON(!irqs_disabled());
 
 	if (!local) {
-		inc_irq_stat(irq_tlb_count);
+		inc_irq_stat(TLB);
 		count_vm_tlb_event(NR_TLB_REMOTE_FLUSH_RECEIVED);
 	}
 
@@ -1303,35 +1373,19 @@ void flush_tlb_multi(const struct cpumask *cpumask,
  */
 unsigned long tlb_single_page_flush_ceiling __read_mostly = 33;
 
-static DEFINE_PER_CPU_SHARED_ALIGNED(struct flush_tlb_info, flush_tlb_info);
-
-#ifdef CONFIG_DEBUG_VM
-static DEFINE_PER_CPU(unsigned int, flush_tlb_info_idx);
-#endif
-
-static struct flush_tlb_info *get_flush_tlb_info(struct mm_struct *mm,
-			unsigned long start, unsigned long end,
-			unsigned int stride_shift, bool freed_tables,
-			u64 new_tlb_gen)
+static void init_flush_tlb_info(struct flush_tlb_info *info,
+				struct mm_struct *mm,
+				unsigned long start, unsigned long end,
+				unsigned int stride_shift, bool freed_tables,
+				u64 new_tlb_gen)
 {
-	struct flush_tlb_info *info = this_cpu_ptr(&flush_tlb_info);
-
-#ifdef CONFIG_DEBUG_VM
-	/*
-	 * Ensure that the following code is non-reentrant and flush_tlb_info
-	 * is not overwritten. This means no TLB flushing is initiated by
-	 * interrupt handlers and machine-check exception handlers.
-	 */
-	BUG_ON(this_cpu_inc_return(flush_tlb_info_idx) != 1);
-#endif
-
 	/*
 	 * If the number of flushes is so large that a full flush
 	 * would be faster, do a full flush.
 	 */
 	if ((end - start) >> stride_shift > tlb_single_page_flush_ceiling) {
-		start = 0;
-		end = TLB_FLUSH_ALL;
+		start	= 0;
+		end	= TLB_FLUSH_ALL;
 	}
 
 	info->start		= start;
@@ -1342,32 +1396,21 @@ static struct flush_tlb_info *get_flush_tlb_info(struct mm_struct *mm,
 	info->new_tlb_gen	= new_tlb_gen;
 	info->initiating_cpu	= smp_processor_id();
 	info->trim_cpumask	= 0;
-
-	return info;
-}
-
-static void put_flush_tlb_info(void)
-{
-#ifdef CONFIG_DEBUG_VM
-	/* Complete reentrancy prevention checks */
-	barrier();
-	this_cpu_dec(flush_tlb_info_idx);
-#endif
 }
 
 void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
 				unsigned long end, unsigned int stride_shift,
 				bool freed_tables)
 {
-	struct flush_tlb_info *info;
+	struct flush_tlb_info info;
+	bool remote_flush = false;
 	int cpu = get_cpu();
 	u64 new_tlb_gen;
 
 	/* This is also a barrier that synchronizes with switch_mm(). */
 	new_tlb_gen = inc_mm_tlb_gen(mm);
 
-	info = get_flush_tlb_info(mm, start, end, stride_shift, freed_tables,
-				  new_tlb_gen);
+	init_flush_tlb_info(&info, mm, start, end, stride_shift, freed_tables, new_tlb_gen);
 
 	/*
 	 * flush_tlb_multi() is not optimized for the common case in which only
@@ -1375,20 +1418,24 @@ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
 	 * flush_tlb_func_local() directly in this case.
 	 */
 	if (mm_global_asid(mm)) {
-		broadcast_tlb_flush(info);
+		broadcast_tlb_flush(&info);
 	} else if (cpumask_any_but(mm_cpumask(mm), cpu) < nr_cpu_ids) {
-		info->trim_cpumask = should_trim_cpumask(mm);
-		flush_tlb_multi(mm_cpumask(mm), info);
-		consider_global_asid(mm);
+		remote_flush = true;
 	} else if (mm == this_cpu_read(cpu_tlbstate.loaded_mm)) {
 		lockdep_assert_irqs_enabled();
 		local_irq_disable();
-		flush_tlb_func(info);
+		flush_tlb_func(&info);
 		local_irq_enable();
 	}
 
-	put_flush_tlb_info();
 	put_cpu();
+
+	if (remote_flush) {
+		info.trim_cpumask = should_trim_cpumask(mm);
+		flush_tlb_multi(mm_cpumask(mm), &info);
+		consider_global_asid(mm);
+	}
+
 	mmu_notifier_arch_invalidate_secondary_tlbs(mm, start, end);
 }
 
@@ -1457,19 +1504,16 @@ static void kernel_tlb_flush_range(struct flush_tlb_info *info)
 
 void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
-	struct flush_tlb_info *info;
+	struct flush_tlb_info info;
 
 	guard(preempt)();
+	init_flush_tlb_info(&info, NULL, start, end, PAGE_SHIFT, false,
+			    TLB_GENERATION_INVALID);
 
-	info = get_flush_tlb_info(NULL, start, end, PAGE_SHIFT, false,
-				  TLB_GENERATION_INVALID);
-
-	if (info->end == TLB_FLUSH_ALL)
-		kernel_tlb_flush_all(info);
+	if (info.end == TLB_FLUSH_ALL)
+		kernel_tlb_flush_all(&info);
 	else
-		kernel_tlb_flush_range(info);
-
-	put_flush_tlb_info();
+		kernel_tlb_flush_range(&info);
 }
 
 /*
@@ -1492,7 +1536,7 @@ unsigned long __get_current_cr3_fast(void)
 	VM_BUG_ON(cr3 != __read_cr3());
 	return cr3;
 }
-EXPORT_SYMBOL_GPL(__get_current_cr3_fast);
+EXPORT_SYMBOL_FOR_KVM(__get_current_cr3_fast);
 
 /*
  * Flush one page in the kernel mapping
@@ -1514,7 +1558,7 @@ void flush_tlb_one_kernel(unsigned long addr)
 	 */
 	flush_tlb_one_user(addr);
 
-	if (!static_cpu_has(X86_FEATURE_PTI))
+	if (!cpu_feature_enabled(X86_FEATURE_PTI))
 		return;
 
 	/*
@@ -1538,7 +1582,7 @@ STATIC_NOPV void native_flush_tlb_one_user(unsigned long addr)
 	invlpg(addr);
 
 	/* If PTI is off there is no user PCID and nothing to flush. */
-	if (!static_cpu_has(X86_FEATURE_PTI))
+	if (!cpu_feature_enabled(X86_FEATURE_PTI))
 		return;
 
 	loaded_mm_asid = this_cpu_read(cpu_tlbstate.loaded_mm_asid);
@@ -1567,7 +1611,7 @@ STATIC_NOPV void native_flush_tlb_global(void)
 {
 	unsigned long flags;
 
-	if (static_cpu_has(X86_FEATURE_INVPCID)) {
+	if (cpu_feature_enabled(X86_FEATURE_INVPCID)) {
 		/*
 		 * Using INVPCID is considerably faster than a pair of writes
 		 * to CR4 sandwiched inside an IRQ flag save/restore.
@@ -1633,16 +1677,16 @@ void __flush_tlb_all(void)
 		flush_tlb_local();
 	}
 }
-EXPORT_SYMBOL_GPL(__flush_tlb_all);
+EXPORT_SYMBOL_FOR_KVM(__flush_tlb_all);
 
 void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch)
 {
-	struct flush_tlb_info *info;
-
+	struct flush_tlb_info info;
+	bool remote_flush = false;
 	int cpu = get_cpu();
 
-	info = get_flush_tlb_info(NULL, 0, TLB_FLUSH_ALL, 0, false,
-				  TLB_GENERATION_INVALID);
+	init_flush_tlb_info(&info, NULL, 0, TLB_FLUSH_ALL, 0, false,
+			    TLB_GENERATION_INVALID);
 	/*
 	 * flush_tlb_multi() is not optimized for the common case in which only
 	 * a local TLB flush is needed. Optimize this use-case by calling
@@ -1652,18 +1696,20 @@ void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch)
 		invlpgb_flush_all_nonglobals();
 		batch->unmapped_pages = false;
 	} else if (cpumask_any_but(&batch->cpumask, cpu) < nr_cpu_ids) {
-		flush_tlb_multi(&batch->cpumask, info);
+		remote_flush = true;
 	} else if (cpumask_test_cpu(cpu, &batch->cpumask)) {
 		lockdep_assert_irqs_enabled();
 		local_irq_disable();
-		flush_tlb_func(info);
+		flush_tlb_func(&info);
 		local_irq_enable();
 	}
 
-	cpumask_clear(&batch->cpumask);
-
-	put_flush_tlb_info();
 	put_cpu();
+
+	if (remote_flush)
+		flush_tlb_multi(&batch->cpumask, &info);
+
+	cpumask_clear(&batch->cpumask);
 }
 
 /*
@@ -1699,7 +1745,7 @@ bool nmi_uaccess_okay(void)
 }
 
 static ssize_t tlbflush_read_file(struct file *file, char __user *user_buf,
-			     size_t count, loff_t *ppos)
+				  size_t count, loff_t *ppos)
 {
 	char buf[32];
 	unsigned int len;
@@ -1708,20 +1754,15 @@ static ssize_t tlbflush_read_file(struct file *file, char __user *user_buf,
 	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
 }
 
-static ssize_t tlbflush_write_file(struct file *file,
-		 const char __user *user_buf, size_t count, loff_t *ppos)
+static ssize_t tlbflush_write_file(struct file *file, const char __user *user_buf,
+				   size_t count, loff_t *ppos)
 {
-	char buf[32];
-	ssize_t len;
 	int ceiling;
+	int err;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	if (kstrtoint(buf, 0, &ceiling))
-		return -EINVAL;
+	err = kstrtoint_from_user(user_buf, count, 0, &ceiling);
+	if (err)
+		return err;
 
 	if (ceiling < 0)
 		return -EINVAL;

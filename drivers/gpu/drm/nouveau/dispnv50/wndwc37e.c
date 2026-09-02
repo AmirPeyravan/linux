@@ -25,6 +25,7 @@
 #include <drm/drm_atomic_helper.h>
 #include <nouveau_bo.h>
 
+#include <nvif/class.h>
 #include <nvif/if0014.h>
 #include <nvif/pushc37b.h>
 
@@ -342,6 +343,7 @@ wndwc37e = {
 	.image_set = wndwc37e_image_set,
 	.image_clr = wndwc37e_image_clr,
 	.blend_set = wndwc37e_blend_set,
+	.blend_modes = WNDW_BLEND_MODES,
 	.update = wndwc37e_update,
 };
 

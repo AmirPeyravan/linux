@@ -8,6 +8,7 @@
 
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
+#include <linux/export.h>
 #include <linux/iio/adc/stm32-dfsdm-adc.h>
 #include <linux/iio/backend.h>
 #include <linux/iio/buffer.h>
@@ -108,7 +109,7 @@ static const struct stm32_dfsdm_str2field stm32_dfsdm_chan_type[] = {
 	{ "SPI_F", 1 }, /* SPI with data on falling edge */
 	{ "MANCH_R", 2 }, /* Manchester codec, rising edge = logic 0 */
 	{ "MANCH_F", 3 }, /* Manchester codec, falling edge = logic 1 */
-	{},
+	{ }
 };
 
 /* DFSDM channel clock source */
@@ -121,7 +122,7 @@ static const struct stm32_dfsdm_str2field stm32_dfsdm_chan_src[] = {
 	{ "CLKOUT_F", DFSDM_CHANNEL_SPI_CLOCK_INTERNAL_DIV2_FALLING },
 	/* Internal SPI clock divided by 2 (falling edge) */
 	{ "CLKOUT_R", DFSDM_CHANNEL_SPI_CLOCK_INTERNAL_DIV2_RISING },
-	{},
+	{ }
 };
 
 static int stm32_dfsdm_str2val(const char *str,
@@ -167,7 +168,7 @@ static const struct stm32_dfsdm_trig_info stm32_dfsdm_trigs[] = {
 	{ LPTIM1_OUT, 26 },
 	{ LPTIM2_OUT, 27 },
 	{ LPTIM3_OUT, 28 },
-	{},
+	{ }
 };
 
 static int stm32_dfsdm_get_jextsel(struct iio_dev *indio_dev,
@@ -659,11 +660,8 @@ static int stm32_dfsdm_channel_parse_of(struct stm32_dfsdm *dfsdm,
 	}
 	df_ch->src = val;
 
-	ret = of_property_read_u32_index(indio_dev->dev.of_node,
-					 "st,adc-alt-channel", chan_idx,
-					 &df_ch->alt_si);
-	if (ret < 0)
-		df_ch->alt_si = 0;
+	df_ch->alt_si = of_property_present(indio_dev->dev.of_node,
+					    "st,adc-alt-channel");
 
 	return 0;
 }
@@ -724,9 +722,8 @@ static int stm32_dfsdm_generic_channel_parse_of(struct stm32_dfsdm *dfsdm,
 	}
 	df_ch->src = val;
 
-	ret = fwnode_property_read_u32(node, "st,adc-alt-channel", &df_ch->alt_si);
-	if (ret != -EINVAL)
-		df_ch->alt_si = 0;
+	if (fwnode_property_present(node, "st,adc-alt-channel"))
+		df_ch->alt_si = 1;
 
 	if (adc->dev_data->type == DFSDM_IIO) {
 		backend = devm_iio_backend_fwnode_get(&indio_dev->dev, NULL, node);
@@ -1747,7 +1744,7 @@ static const struct of_device_id stm32_dfsdm_adc_match[] = {
 		.compatible = "st,stm32-dfsdm-dmic",
 		.data = &stm32h7_dfsdm_audio_data,
 	},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, stm32_dfsdm_adc_match);
 
@@ -1763,10 +1760,8 @@ static int stm32_dfsdm_adc_probe(struct platform_device *pdev)
 
 	dev_data = of_device_get_match_data(dev);
 	iio = devm_iio_device_alloc(dev, sizeof(*adc));
-	if (!iio) {
-		dev_err(dev, "%s: Failed to allocate IIO\n", __func__);
+	if (!iio)
 		return -ENOMEM;
-	}
 
 	adc = iio_priv(iio);
 	adc->dfsdm = dev_get_drvdata(dev->parent);
@@ -1817,9 +1812,8 @@ static int stm32_dfsdm_adc_probe(struct platform_device *pdev)
 
 	adc->dfsdm->fl_list[adc->fl_id].ford = val;
 
-	ret = of_property_read_u32(dev->of_node, "st,filter0-sync", &val);
-	if (!ret)
-		adc->dfsdm->fl_list[adc->fl_id].sync_mode = val;
+	adc->dfsdm->fl_list[adc->fl_id].sync_mode =
+		of_property_read_bool(dev->of_node, "st,filter0-sync");
 
 	adc->dev_data = dev_data;
 	ret = dev_data->init(dev, iio);

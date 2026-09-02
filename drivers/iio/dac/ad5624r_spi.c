@@ -160,7 +160,7 @@ static const struct iio_chan_spec_ext_info ad5624r_ext_info[] = {
 	IIO_ENUM("powerdown_mode", IIO_SHARED_BY_TYPE,
 		 &ad5624r_powerdown_mode_enum),
 	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ad5624r_powerdown_mode_enum),
-	{ },
+	{ }
 };
 
 #define AD5624R_CHANNEL(_chan, _bits) { \
@@ -260,13 +260,13 @@ static int ad5624r_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad5624r_id[] = {
-	{"ad5624r3", ID_AD5624R3},
-	{"ad5644r3", ID_AD5644R3},
-	{"ad5664r3", ID_AD5664R3},
-	{"ad5624r5", ID_AD5624R5},
-	{"ad5644r5", ID_AD5644R5},
-	{"ad5664r5", ID_AD5664R5},
-	{}
+	{ .name = "ad5624r3", .driver_data = ID_AD5624R3 },
+	{ .name = "ad5644r3", .driver_data = ID_AD5644R3 },
+	{ .name = "ad5664r3", .driver_data = ID_AD5664R3 },
+	{ .name = "ad5624r5", .driver_data = ID_AD5624R5 },
+	{ .name = "ad5644r5", .driver_data = ID_AD5644R5 },
+	{ .name = "ad5664r5", .driver_data = ID_AD5664R5 },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad5624r_id);
 

@@ -87,7 +87,7 @@ extern unsigned long __drm_debug;
  *  - drm.debug=0x2 will enable DRIVER messages
  *  - drm.debug=0x3 will enable CORE and DRIVER messages
  *  - ...
- *  - drm.debug=0x1ff will enable all messages
+ *  - drm.debug=0x3ff will enable all messages
  *
  * An interesting feature is that it's possible to enable verbose logging at
  * run-time by echoing the debug value in its sysfs node::
@@ -342,6 +342,26 @@ drm_coredump_printer(struct drm_print_iterator *iter)
 	iter->offset = 0;
 
 	return p;
+}
+
+/**
+ * drm_coredump_printer_is_full() - DRM coredump printer output is full
+ * @p: DRM coredump printer
+ *
+ * DRM printer output is full, useful to short circuit coredump printing once
+ * printer is full.
+ *
+ * RETURNS:
+ * True if DRM coredump printer output buffer is full, False otherwise
+ */
+static inline bool drm_coredump_printer_is_full(struct drm_printer *p)
+{
+	struct drm_print_iterator *iterator = p->arg;
+
+	if (p->printfn != __drm_printfn_coredump)
+		return true;
+
+	return !iterator->remain;
 }
 
 /**

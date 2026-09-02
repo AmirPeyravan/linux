@@ -118,13 +118,14 @@ static unsigned int calc_speed(int mult)
 
 static int longhaul_get_cpu_mult(void)
 {
-	unsigned long invalue = 0, lo, hi;
+	unsigned long invalue = 0;
+	u64 val;
 
-	rdmsr(MSR_IA32_EBL_CR_POWERON, lo, hi);
-	invalue = (lo & (1<<22|1<<23|1<<24|1<<25))>>22;
+	rdmsrq(MSR_IA32_EBL_CR_POWERON, val);
+	invalue = (val & (1<<22|1<<23|1<<24|1<<25))>>22;
 	if (longhaul_version == TYPE_LONGHAUL_V2 ||
 	    longhaul_version == TYPE_POWERSAVER) {
-		if (lo & (1<<27))
+		if (val & (1<<27))
 			invalue += 16;
 	}
 	return eblcr[invalue];
@@ -136,7 +137,7 @@ static void do_longhaul1(unsigned int mults_index)
 {
 	union msr_bcr2 bcr2;
 
-	rdmsrl(MSR_VIA_BCR2, bcr2.val);
+	rdmsrq(MSR_VIA_BCR2, bcr2.val);
 	/* Enable software clock multiplier */
 	bcr2.bits.ESOFTBF = 1;
 	bcr2.bits.CLOCKMUL = mults_index & 0xff;
@@ -144,16 +145,16 @@ static void do_longhaul1(unsigned int mults_index)
 	/* Sync to timer tick */
 	safe_halt();
 	/* Change frequency on next halt or sleep */
-	wrmsrl(MSR_VIA_BCR2, bcr2.val);
+	wrmsrq(MSR_VIA_BCR2, bcr2.val);
 	/* Invoke transition */
 	ACPI_FLUSH_CPU_CACHE();
 	halt();
 
 	/* Disable software clock multiplier */
 	local_irq_disable();
-	rdmsrl(MSR_VIA_BCR2, bcr2.val);
+	rdmsrq(MSR_VIA_BCR2, bcr2.val);
 	bcr2.bits.ESOFTBF = 0;
-	wrmsrl(MSR_VIA_BCR2, bcr2.val);
+	wrmsrq(MSR_VIA_BCR2, bcr2.val);
 }
 
 /* For processor with Longhaul MSR */
@@ -164,7 +165,7 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	union msr_longhaul longhaul;
 	u32 t;
 
-	rdmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+	rdmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	/* Setup new frequency */
 	if (!revid_errata)
 		longhaul.bits.RevisionKey = longhaul.bits.RevisionID;
@@ -180,7 +181,7 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	/* Raise voltage if necessary */
 	if (can_scale_voltage && dir) {
 		longhaul.bits.EnableSoftVID = 1;
-		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 		/* Change voltage */
 		if (!cx_address) {
 			ACPI_FLUSH_CPU_CACHE();
@@ -194,12 +195,12 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 			t = inl(acpi_gbl_FADT.xpm_timer_block.address);
 		}
 		longhaul.bits.EnableSoftVID = 0;
-		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	}
 
 	/* Change frequency on next halt or sleep */
 	longhaul.bits.EnableSoftBusRatio = 1;
-	wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+	wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	if (!cx_address) {
 		ACPI_FLUSH_CPU_CACHE();
 		halt();
@@ -212,12 +213,12 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	}
 	/* Disable bus ratio bit */
 	longhaul.bits.EnableSoftBusRatio = 0;
-	wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+	wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 
 	/* Reduce voltage if necessary */
 	if (can_scale_voltage && !dir) {
 		longhaul.bits.EnableSoftVID = 1;
-		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 		/* Change voltage */
 		if (!cx_address) {
 			ACPI_FLUSH_CPU_CACHE();
@@ -231,7 +232,7 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 			t = inl(acpi_gbl_FADT.xpm_timer_block.address);
 		}
 		longhaul.bits.EnableSoftVID = 0;
-		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	}
 }
 
@@ -475,8 +476,7 @@ static int longhaul_get_ranges(void)
 		return -EINVAL;
 	}
 
-	longhaul_table = kcalloc(numscales + 1, sizeof(*longhaul_table),
-				 GFP_KERNEL);
+	longhaul_table = kzalloc_objs(*longhaul_table, numscales + 1);
 	if (!longhaul_table)
 		return -ENOMEM;
 
@@ -534,7 +534,7 @@ static void longhaul_setup_voltagescaling(void)
 	unsigned int j, speed, pos, kHz_step, numvscales;
 	int min_vid_speed;
 
-	rdmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+	rdmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	if (!(longhaul.bits.RevisionID & 1)) {
 		pr_info("Voltage scaling not supported by CPU\n");
 		return;
@@ -762,7 +762,7 @@ static int longhaul_cpu_init(struct cpufreq_policy *policy)
 	struct cpuinfo_x86 *c = &cpu_data(0);
 	char *cpuname = NULL;
 	int ret;
-	u32 lo, hi;
+	u64 val;
 
 	/* Check what we have on this motherboard */
 	switch (c->x86_model) {
@@ -836,8 +836,8 @@ static int longhaul_cpu_init(struct cpufreq_policy *policy)
 	}
 	/* Check Longhaul ver. 2 */
 	if (longhaul_version == TYPE_LONGHAUL_V2) {
-		rdmsr(MSR_VIA_LONGHAUL, lo, hi);
-		if (lo == 0 && hi == 0)
+		rdmsrq(MSR_VIA_LONGHAUL, val);
+		if (val == 0)
 			/* Looks like MSR isn't present */
 			longhaul_version = TYPE_LONGHAUL_V1;
 	}
@@ -952,6 +952,9 @@ static void __exit longhaul_exit(void)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(0);
 	int i;
+
+	if (unlikely(!policy))
+		return;
 
 	for (i = 0; i < numscales; i++) {
 		if (mults[i] == maxmult) {
